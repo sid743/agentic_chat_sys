@@ -1,0 +1,115 @@
+# Model providers the agent core can use.
+#
+# Every provider speaks the OpenAI chat-completions API (type: openai), except the
+# built-in offline "mock" provider. Values support ${ENV_VAR} and ${ENV_VAR:-default}.
+#
+# A hosted provider is enabled when its api_key resolves to a non-empty value.
+# A local provider (local: true) is listed in the model menu only while its
+# server is reachable.
+#
+# Model ids exposed to LibreChat are "<provider>/<model>", e.g. groq/qwen/qwen3.8-27b.
+# Groq model ids contain a slash of their own, so the full id doubles up: groq/openai/gpt-oss-120b.
+# The special id "auto" uses AGENT_DEFAULT_MODEL (or the first available provider).
+
+providers:
+  groq:
+    label: Groq
+    type: openai
+    base_url: https://api.groq.com/openai/v1
+    api_key: ${GROQ_API_KEY:-}
+    fetch_models: true
+    # Only chat-capable families (Groq also lists speech / guard models)
+    model_include: "^(llama|openai/gpt-oss|qwen|meta-llama/llama-4|moonshotai|deepseek|mistral|gemma|minimax)"
+    model_exclude: "(guard|whisper|tts|orpheus|safeguard)"
+    # Fallback list, used only when the live model list cannot be fetched.
+    models:
+      - qwen/qwen3.8-27b
+      - openai/gpt-oss-120b
+      - openai/gpt-oss-20b
+    tool_mode: native
+
+  gemini:
+    label: Google Gemini
+    type: openai
+    # Google's own OpenAI-compatible endpoint (Bearer key, native tool calling)
+    base_url: ${GEMINI_BASE_URL:-https://generativelanguage.googleapis.com/v1beta/openai}
+    api_key: ${GEMINI_API_KEY:-}
+    fetch_models: true
+    model_include: "^(models/)?gemini"
+    model_exclude: "(embedding|imagen|veo|tts|image|audio|live|aqa|learnlm)"
+    # Fallback list, used only when the live model list cannot be fetched.
+    models:
+      - gemini-3.1-flash-lite
+      - gemini-3.5-flash
+      - gemini-3.8-flash
+    tool_mode: native
+
+  openai:
+    label: OpenAI
+    type: openai
+    base_url: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+    api_key: ${OPENAI_API_KEY:-}
+    fetch_models: true
+    model_include: "^(gpt-|o\\d|chatgpt)"
+    model_exclude: "(audio|realtime|transcribe|tts|image|search|instruct|codex|embedding|moderation)"
+    models:
+      - gpt-5-mini
+      - gpt-5-nano
+      - gpt-4.1-mini
+    tool_mode: native
+
+  openrouter:
+    label: OpenRouter
+    type: openai
+    base_url: https://openrouter.ai/api/v1
+    api_key: ${OPENROUTER_API_KEY:-}
+    fetch_models: false
+    models:
+      - meta-llama/llama-3.3-70b-instruct
+      - qwen/qwen-2.5-72b-instruct
+    tool_mode: native
+
+  ollama:
+    label: Ollama (local)
+    type: openai
+    local: true
+    base_url: ${OLLAMA_BASE_URL:-http://localhost:11434/v1}
+    api_key: ollama
+    fetch_models: true
+    model_exclude: "(embed|nomic|bge|minilm)"
+    models:
+      - llama3.1:8b
+      - qwen2.5:7b
+    # Models without tool support are detected automatically and switched to
+    # a JSON-prompted tool protocol.
+    tool_mode: native
+
+  lmstudio:
+    label: LM Studio (local)
+    type: openai
+    local: true
+    base_url: ${LMSTUDIO_BASE_URL:-http://localhost:1234/v1}
+    api_key: lm-studio
+    fetch_models: true
+    model_exclude: "(embed)"
+    models: []
+    tool_mode: native
+
+  vllm:
+    label: vLLM (local)
+    type: openai
+    local: true
+    base_url: ${VLLM_BASE_URL:-http://localhost:8000/v1}
+    api_key: ${VLLM_API_KEY:-vllm}
+    fetch_models: true
+    models: []
+    tool_mode: native
+
+  mock:
+    label: Offline demo model
+    type: mock
+    models:
+      - hr-demo
+
+# Order used when AGENT_DEFAULT_MODEL is empty ("auto").
+default_priority: [groq, gemini, openai, openrouter, ollama, lmstudio, vllm, mock]
