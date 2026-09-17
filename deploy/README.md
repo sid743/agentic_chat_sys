@@ -38,13 +38,57 @@ az vm show -d -g hr-demo-rg -n hr-demo --query publicIps -o tsv
 That last line prints the public IP. Only tcp:3080 is opened; leave 8088 closed, because the agent
 console can browse and reset the demo database. `docker-compose.yml` binds it to localhost anyway.
 
-If anything fails:
+### If the VM size is not available
+
+`SkuNotAvailable ... Capacity Restrictions` means that size has no room in that region right now
+(often only for spot). Nothing is created when preflight fails, so retrying costs nothing. Paste
+this and it walks down the alternatives until one sticks:
+
+```bash
+create_vm() {                       # create_vm <location> <size> [extra args...]
+  local loc="$1" size="$2"; shift 2
+  echo "-- trying $size in $loc ${*:+(spot)}"
+  az vm create -g hr-demo-rg -n hr-demo --location "$loc" \
+    --image Ubuntu2404 --size "$size" \
+    --admin-username azureuser --generate-ssh-keys \
+    --public-ip-sku Standard --os-disk-size-gb 32 \
+    "$@" --only-show-errors -o none \
+  && echo "CREATED: $size in $loc" && return 0
+  return 1
+}
+
+SPOT="--priority Spot --eviction-policy Deallocate --max-price -1"
+
+create_vm centralindia Standard_B2als_v2 $SPOT \
+  || create_vm centralindia Standard_D2as_v5 $SPOT \
+  || create_vm southindia  Standard_B2als_v2 $SPOT \
+  || create_vm centralindia Standard_B2als_v2 \
+  || create_vm centralindia Standard_B2s \
+  || echo "Nothing worked - run the capacity check below."
+```
+
+All 4 GB / 2 vCPU except `Standard_D2as_v5`, which is 8 GB and costs more; the last two attempts
+are on-demand rather than spot, because spot capacity runs out first.
+
+If none of them work, look at what the subscription is actually allowed:
+
+```bash
+az vm list-skus --location centralindia --resource-type virtualMachines --all \
+  --query "[?starts_with(name,'Standard_B2') || starts_with(name,'Standard_D2')].{Size:name, Restriction:restrictions[0].reasonCode}" \
+  -o table
+```
+
+`NotAvailableForSubscription` means that size is off-limits to your subscription in that region
+(common on trial subscriptions, which also tend to have no spot quota at all). Then try another
+region — `southindia`, or `southeastasia` (Singapore, roughly 60 ms from Mumbai and rarely short of
+capacity) — by passing it to `create_vm`.
+
+Other failures:
 
 - *Unrecognised image alias* — use `--image Canonical:ubuntu-24_04-lts:server:latest`, or `Ubuntu2204`.
-- *SkuNotAvailable / no spot capacity* — drop the three spot flags for a regular VM, or try
-  `--location southindia` / `--size Standard_B2als_v2`.
-- *Quota errors on a free trial* — free subscriptions often have no spot quota. Same fix: drop the
-  spot flags.
+- *A retry complains that a NIC or public IP already exists* — a previous attempt got past preflight.
+  Clear it with `az group delete -n hr-demo-rg --yes` and recreate the group.
+- *The `--max-price` preview warning* — harmless, it always prints.
 
 ## 2. Get the code onto the VM
 

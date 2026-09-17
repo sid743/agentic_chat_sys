@@ -171,5 +171,6 @@ def test_router_rate_limit_falls_back_to_the_rules(fake_service):
     out = ask(fake_service, "What is our parental leave policy?", model="fake/fake-model")
     assert out["status"] == "ok"
     assert "using the built-in routing rules" in out["reasoning"]
+    assert "rate limit reached" in out["reasoning"].lower()  # the provider's own wording survives
     assert "Plan (heuristic)" in out["reasoning"]
     assert out["agents"] == ["policy_agent"]

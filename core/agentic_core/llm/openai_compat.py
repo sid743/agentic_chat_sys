@@ -86,6 +86,17 @@ class OpenAICompatModel(ChatModel):
             kwargs["extra_body"] = self.extra_body
         return kwargs
 
+    @staticmethod
+    def _detail(exc: Exception) -> str:
+        """The provider's own message, which usually names the quota that was hit."""
+        body = getattr(exc, "body", None)
+        if isinstance(body, dict):
+            error = body.get("error")
+            message = error.get("message") if isinstance(error, dict) else body.get("message")
+            if message:
+                return " ".join(str(message).split())[:300]
+        return ""
+
     def _friendly(self, exc: Exception) -> LLMError:
         where = f"{self.provider} ({self.base_url})"
         if isinstance(exc, openai.AuthenticationError):
@@ -95,7 +106,12 @@ class OpenAICompatModel(ChatModel):
         if isinstance(exc, openai.NotFoundError):
             return LLMError(f"Model '{self.model}' was not found at {where}. Is it pulled/deployed?")
         if isinstance(exc, openai.RateLimitError):
-            return LLMError(f"Rate limit reached at {where}. Try again shortly or pick another model.")
+            detail = self._detail(exc)
+            return LLMError(
+                f"Rate limit reached at {where} for '{self.model}'."
+                + (f" Provider says: {detail}" if detail else "")
+                + " Wait for the window to reset, pick another model, or raise the quota."
+            )
         if isinstance(exc, openai.APITimeoutError):
             return LLMError(f"Timed out waiting for {where}.")
         if isinstance(exc, openai.APIConnectionError):
