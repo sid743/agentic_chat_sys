@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Set up this stack on a fresh Debian 12 / Ubuntu VM (Docker, .env, containers).
+# Set up this stack on a fresh Ubuntu or Debian VM (Docker, .env, containers).
+# Works on Azure, Google Cloud or any other VM; see deploy/README.md.
 #
 #   GEMINI_API_KEY=AIza... AGENT_DEFAULT_MODEL=gemini/gemini-3.1-flash-lite bash deploy/vm-bootstrap.sh
 #   GROQ_API_KEY=gsk_...   AGENT_DEFAULT_MODEL=groq/openai/gpt-oss-120b     bash deploy/vm-bootstrap.sh
@@ -35,8 +36,10 @@ if [ -n "${AGENT_ROUTER_MODEL:-}" ]; then ARGS+=(--router-model "$AGENT_ROUTER_M
 python3 scripts/setup_env.py ${ARGS[@]+"${ARGS[@]}"}
 
 # --- Public address ----------------------------------------------------------
-META="http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip"
-IP="$(curl -fsS --max-time 2 -H 'Metadata-Flavor: Google' "$META" 2>/dev/null || true)"
+AZURE_META="http://169.254.169.254/metadata/instance/network/interface/0/ipv4/ipAddress/0/publicIpAddress?api-version=2021-02-01&format=text"
+GCP_META="http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip"
+IP="$(curl -fsS --max-time 2 -H 'Metadata:true' "$AZURE_META" 2>/dev/null || true)"
+if [ -z "$IP" ]; then IP="$(curl -fsS --max-time 2 -H 'Metadata-Flavor: Google' "$GCP_META" 2>/dev/null || true)"; fi
 if [ -z "$IP" ]; then IP="$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"; fi
 
 if [ -n "$IP" ]; then

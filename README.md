@@ -176,9 +176,10 @@ Open the **Thoughts** block in LibreChat to see the plan, each agent, every tool
 
 ## Deploy to a test VM
 
-`deploy/vm-bootstrap.sh` sets up a fresh Debian/Ubuntu VM in one command: Docker, `.env`, the
-public address, the containers and a smoke test. `deploy/README.md` walks through it on Google
-Cloud with a small spot VM, including the firewall rule and turning registration off afterwards.
+`deploy/vm-bootstrap.sh` sets up a fresh Ubuntu/Debian VM in one command: Docker, `.env`, the
+public address, the containers and a smoke test. `deploy/README.md` walks through it on Azure
+(and Google Cloud) with a small spot VM, including the firewall rule, the SSH tunnel for the
+console and turning registration off afterwards.
 
 ```bash
 GEMINI_API_KEY=AIza_... AGENT_DEFAULT_MODEL=gemini/gemini-3.1-flash-lite bash deploy/vm-bootstrap.sh
