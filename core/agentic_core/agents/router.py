@@ -27,7 +27,7 @@ class RoutePlan:
     source: str = "llm"
 
     def as_dict(self) -> dict[str, Any]:
-        data: dict[str, Any] = {"mode": self.mode, "reason": self.reason}
+        data: dict[str, Any] = {"mode": self.mode, "reason": self.reason, "source": self.source}
         if self.mode == "direct":
             data["answer"] = self.answer
         else:

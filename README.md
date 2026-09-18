@@ -50,6 +50,8 @@ What happens on each message:
 1. LibreChat sends the conversation to the agent core as a normal OpenAI chat request. Headers carry the LibreChat user's email and the conversation id (`{{LIBRECHAT_USER_EMAIL}}`, `{{LIBRECHAT_BODY_CONVERSATIONID}}`).
 2. The agent core maps the email to a demo employee, which decides what that user is allowed to see and do.
 3. Any document attached with LibreChat's "Upload as Text" is taken out of the prompt and indexed for that conversation only.
+4. Every answer ends with the path the turn took through the graph: which agent the router picked,
+   what ran after it, and whether the reply was merged or passed through. `SHOW_FLOW=false` turns it off.
 4. The **orchestrator** (an LLM planner, with a keyword fallback) picks 1-3 specialist agents and writes a task for each.
 5. Each agent runs its own tool-calling loop. Retrieval happens only when an agent calls a search tool.
 6. Workflow changes (submit, approve, reject, cancel) automatically hand off to the **Notification Agent**.
@@ -255,6 +257,7 @@ Any other OpenAI-compatible client can use the core too: base URL `http://localh
 | `DEMO_TODAY` | 2026-09-17 | Fixed date for the demo data; empty = real date |
 | `EMBEDDINGS_PROVIDER`, `EMBEDDINGS_MODEL`, `EMBEDDINGS_BASE_URL`, `EMBEDDINGS_API_KEY` | hash | Retrieval embeddings |
 | `QDRANT_URL` | empty | Use a Qdrant server (`docker compose --profile qdrant up -d`) instead of the embedded store |
+| `SHOW_FLOW` | `true` | Plain-text graph of the turn under every answer (`START -> route -> ... -> END`). |
 | `AGENT_CORE_BIND` | `127.0.0.1` | Host interface for the console port in Docker. `0.0.0.0` exposes it beyond the machine. |
 | `DATABASE_URL` | SQLite in `core/var` | e.g. `postgresql+psycopg://...` (`pip install psycopg[binary]`) |
 | `REASONING_FIELD` | reasoning_content | `think` suits clients that parse `<think>` tags; `none` hides the trace |
@@ -302,6 +305,7 @@ agenticsys/
     │   ├── rag/                parsing, chunking, embeddings, Qdrant + BM25
     │   ├── service.py          request handling, identity, uploads, commands, run log
     │   ├── gateway.py          demo front door: auto sign-in and branding over LibreChat
+    │   ├── agents/flow.py      the graph path drawn under each answer
     │   └── static/admin.html   agent console
     └── tests/                  pytest suite (offline; fake OpenAI server for the HTTP path)
 ```
@@ -327,7 +331,7 @@ agenticsys/
 - The offline model makes routing and answers deterministic, which is useful for tests and dry runs. It is not a real LLM.
 - The default `hash` embeddings are lexical. Use fastembed or an embeddings API for semantic retrieval.
 - What was tested while building this:
-  - The Python test suite (105 tests, offline). It includes a fake OpenAI-compatible server for the tool-calling, JSON-fallback and streaming paths.
+  - The Python test suite (112 tests, offline). It includes a fake OpenAI-compatible server for the tool-calling, JSON-fallback and streaming paths.
   - `librechat.yaml`, checked against LibreChat's own config schema for v0.8.7 (current stable) and v0.8.8-rc3.
   - The agent core started the way its container starts it: a clean Python 3.12 install from `requirements.txt`, the same files, the environment from a fresh `setup_env.py` run, the compose health check, and `scripts/smoke_test.py`.
   - The Docker images themselves were not built or started, because the build sandbox could not reach any container registry. `docker compose config` passes.

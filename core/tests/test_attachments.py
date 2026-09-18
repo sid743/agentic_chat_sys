@@ -54,7 +54,14 @@ def test_normalize_history_dedupes_files_and_strips_footer():
         [
             {"role": "system", "content": "Be brief"},
             {"role": "user", "content": first},
-            {"role": "assistant", "content": "It is 3500.\n\n---\n_Agents: Document Agent · model `x` · run `r`_"},
+            {
+                "role": "assistant",
+                "content": (
+                    "It is 3500.\n\n---\n```text\nSTART -> route(llm) -> document_agent -> synthesize -> END\n"
+                    "  answer   Document Agent, passed through synthesize unchanged\n```\n"
+                    "_Agents: Document Agent · model `x` · run `r`_"
+                ),
+            },
             {"role": "user", "content": first.replace("What is the per diem?", "And flights?")},
         ]
     )

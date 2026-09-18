@@ -79,6 +79,8 @@ class Settings(BaseSettings):
     # minimal | normal | debug
     trace_level: str = "normal"
     answer_footer: bool = True
+    # Plain-text LangGraph path under every answer (route -> agents -> synthesize).
+    show_flow: bool = True
     auto_seed: bool = True
 
     @field_validator("demo_today", mode="before")

@@ -69,17 +69,49 @@ log "Making sure the demo account exists"
 env_value() { grep -E "^$1=" .env | head -1 | cut -d= -f2-; }
 DEMO_EMAIL="$(env_value DEMO_USER_EMAIL)"
 DEMO_NAME="$(env_value DEMO_USER_NAME)"
-DEMO_PASSWORD_VALUE="$(env_value DEMO_USER_PASSWORD)"
-if [ -n "$DEMO_EMAIL" ] && [ -n "$DEMO_PASSWORD_VALUE" ]; then
-  for _ in $(seq 1 30); do
-    $DOCKER compose exec -T librechat node -e "process.exit(0)" >/dev/null 2>&1 && break
-    sleep 2
-  done
-  if $DOCKER compose exec -T librechat npm run create-user -- \
-       "$DEMO_EMAIL" "${DEMO_NAME:-Demo User}" "${DEMO_EMAIL%%@*}" "$DEMO_PASSWORD_VALUE" >/dev/null 2>&1; then
-    echo "created $DEMO_EMAIL"
+DEMO_PASS="$(env_value DEMO_USER_PASSWORD)"
+DOMAIN="$(env_value DOMAIN_CLIENT)"
+DEMO_USERNAME="${DEMO_EMAIL%%@*}"
+
+login_code() {
+  curl -s -o /dev/null -w '%{http_code}' --max-time 15 \
+    -X POST "http://localhost:3080/api/auth/login" \
+    -H "origin: ${DOMAIN:-http://localhost:3080}" -H 'content-type: application/json' \
+    -d "{\"email\":\"$DEMO_EMAIL\",\"password\":\"$DEMO_PASS\"}" 2>/dev/null || echo 000
+}
+
+wait_for_stack() { for _ in $(seq 1 30); do [ "$(login_code)" != "000" ] && return 0; sleep 3; done; }
+
+if [ -n "$DEMO_EMAIL" ] && [ -n "$DEMO_PASS" ]; then
+  wait_for_stack
+  if [ "$(login_code)" = "200" ]; then
+    echo "$DEMO_EMAIL can already sign in"
   else
-    echo "$DEMO_EMAIL already exists (or LibreChat is still starting) - carrying on"
+    echo "creating $DEMO_EMAIL"
+    # --email-verified=true is not optional: without it the CLI asks a question, and
+    # with no terminal attached (exec -T) it waits for an answer forever.
+    timeout 150 $DOCKER compose exec -T librechat npm run create-user -- \
+      "$DEMO_EMAIL" "${DEMO_NAME:-Demo User}" "$DEMO_USERNAME" "$DEMO_PASS" \
+      --email-verified=true </dev/null >/dev/null 2>&1 || true
+
+    if [ "$(login_code)" != "200" ]; then
+      echo "that did not take; using the registration endpoint instead"
+      sed -i 's/^ALLOW_REGISTRATION=.*/ALLOW_REGISTRATION=true/' .env
+      $DOCKER compose up -d librechat >/dev/null 2>&1 || true
+      wait_for_stack
+      curl -s --max-time 30 -o /dev/null -X POST "http://localhost:3080/api/auth/register" \
+        -H "origin: ${DOMAIN:-http://localhost:3080}" -H 'content-type: application/json' \
+        -d "{\"email\":\"$DEMO_EMAIL\",\"password\":\"$DEMO_PASS\",\"confirm_password\":\"$DEMO_PASS\",\"name\":\"${DEMO_NAME:-Demo User}\",\"username\":\"$DEMO_USERNAME\"}" || true
+      sed -i 's/^ALLOW_REGISTRATION=.*/ALLOW_REGISTRATION=false/' .env
+      $DOCKER compose up -d librechat >/dev/null 2>&1 || true
+      wait_for_stack
+    fi
+
+    if [ "$(login_code)" = "200" ]; then
+      echo "demo account ready"
+    else
+      echo "could not create the demo account; the UI will show the login page until it exists"
+    fi
   fi
   $DOCKER compose restart gateway >/dev/null 2>&1 || true
 fi

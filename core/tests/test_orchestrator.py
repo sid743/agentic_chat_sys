@@ -174,3 +174,14 @@ def test_router_rate_limit_falls_back_to_the_rules(fake_service):
     assert "rate limit reached" in out["reasoning"].lower()  # the provider's own wording survives
     assert "Plan (heuristic)" in out["reasoning"]
     assert out["agents"] == ["policy_agent"]
+
+
+def test_answer_carries_the_flow_diagram(fake_service):
+    fake_service.settings.show_flow = True
+    fake_service.settings.answer_footer = True
+    out = ask(fake_service, "How much annual leave do I have and how much can I carry forward?", model="fake/fake-model")
+    assert "START -> route(llm)" in out["content"]
+    assert "-> synthesize -> END" in out["content"]
+    assert "  agents   " in out["content"]
+    # and it is recorded for the console without breaking the reasoning-then-content order
+    assert "START -> route(llm)" not in out["reasoning"]

@@ -17,6 +17,7 @@ from ..llm.registry import ModelRegistry
 from ..settings import Settings
 from .config import AgentsConfig
 from .context import RequestContext
+from .flow import flow_block, flow_lines
 from .router import heuristic_route, llm_route
 from .runtime import AgentResult, AgentRunner, prompt_values, render
 
@@ -279,11 +280,19 @@ class Orchestrator:
                 "Check the provider settings in `.env`, start your local model server, or pick another model."
             )
             await self._stream_text(rt, answer)
+        plan_data = final.get("plan", {})
+        merged = self.config.orchestrator.synthesize != "never"
+        if self.settings.show_flow:
+            request.trace.flow(flow_lines(plan_data, results, merged=merged, error=error))
+        if self.settings.show_flow and status == "ok":
+            block = "\n\n---\n" + flow_block(plan_data, results, merged=merged)
+            rt.emit(block)
+            answer += block
         if self.settings.answer_footer and status == "ok":
             names = [r.agent_name for r in results]
+            lead = "\n" if self.settings.show_flow else "\n\n---\n"  # the diagram already drew the rule
             footer = (
-                "\n\n---\n"
-                f"_Agents: {', '.join(names) if names else 'orchestrator only'} · model `{model.id}` · "
+                f"{lead}_Agents: {', '.join(names) if names else 'orchestrator only'} · model `{model.id}` · "
                 f"run `{request.run_id}`_"
             )
             rt.emit(footer)

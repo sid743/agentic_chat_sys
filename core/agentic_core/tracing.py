@@ -73,7 +73,16 @@ class TraceRecorder:
     def subscribe(self, listener: Callable[[str], None]) -> None:
         self._listeners.append(listener)
 
-    def emit(self, kind: str, text: str, *, agent: str | None = None, data: Any = None, level: str = "normal") -> None:
+    def emit(
+        self,
+        kind: str,
+        text: str,
+        *,
+        agent: str | None = None,
+        data: Any = None,
+        level: str = "normal",
+        record_only: bool = False,
+    ) -> None:
         self.events.append(
             {
                 "t_ms": int((time.monotonic() - self._t0) * 1000),
@@ -84,7 +93,7 @@ class TraceRecorder:
                 "data": data,
             }
         )
-        if LEVELS.get(level, 1) <= self.level:
+        if not record_only and LEVELS.get(level, 1) <= self.level:
             for listener in self._listeners:
                 listener(text)
 
@@ -130,6 +139,15 @@ class TraceRecorder:
         cites = "; ".join(dict.fromkeys(citations)) or "no matching passages"
         self.emit("rag", f"  - retrieval ({scope}) \"{_short(query, 80)}\" -> {cites}\n", agent=agent_id,
                   data={"scope": scope, "query": query, "citations": citations})
+
+    def flow(self, lines: list[str]) -> None:
+        """The plain-text path through the graph, at the end of the trace."""
+        if not lines:
+            return
+        # Recorded for the run log and the console, not streamed: the answer already
+        # carries the diagram, and LibreChat wants every reasoning chunk before the
+        # first content chunk.
+        self.emit("flow", "\nGraph\n" + "\n".join(lines) + "\n", data={"lines": lines}, record_only=True)
 
     def note(self, text: str, agent: str | None = None, level: str = "normal") -> None:
         self.emit("note", f"{'  ' if agent else ''}- {text}\n", agent=agent, level=level)

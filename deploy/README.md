@@ -146,6 +146,30 @@ sed -i 's/^GATEWAY_AUTO_LOGIN=.*/GATEWAY_AUTO_LOGIN=false/' .env
 docker compose up -d
 ```
 
+### If the demo account is missing
+
+The bootstrap creates it, but if the UI shows a login page, do it by hand:
+
+```bash
+cd ~/agenticsys
+EMAIL=$(grep ^DEMO_USER_EMAIL= .env | cut -d= -f2-)
+PASS=$(grep ^DEMO_USER_PASSWORD= .env | cut -d= -f2-)
+docker compose exec -T librechat npm run create-user -- \
+  "$EMAIL" "Demo User" "${EMAIL%%@*}" "$PASS" --email-verified=true </dev/null
+docker compose restart gateway
+```
+
+`--email-verified=true` matters: without it LibreChat's CLI asks a question, and with no terminal
+attached it waits for an answer forever. Check it worked:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -X POST http://localhost:3080/api/auth/login \
+  -H "origin: $(grep ^DOMAIN_CLIENT= .env | cut -d= -f2-)" -H 'content-type: application/json' \
+  -d "{\"email\":\"$EMAIL\",\"password\":\"$PASS\"}"
+```
+
+`200` means the demo sign-in will work.
+
 ## 5. Day to day
 
 ```bash

@@ -29,7 +29,7 @@ from typing import Any
 
 LIBRECHAT_PREFIX = "Attached document(s):\n```md"
 _FILE_SPLIT = re.compile(r'(?:^|\n\n---\n\n)# "(.+?)"\n')
-_FOOTER = re.compile(r"\n+---\n_Agents: .*?_\s*$", re.DOTALL)
+_FOOTER = re.compile(r"\n+---\n(?:```text\n.*?\n```\n?)?(?:_Agents: .*?_)?\s*$", re.DOTALL)
 
 
 @dataclass
