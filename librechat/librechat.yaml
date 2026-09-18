@@ -33,6 +33,7 @@ modelSpecs:
       description: "Orchestrator + Leave Policy, Eligibility, Approval/Workflow, Notification and Document agents"
       softDefault: true
       showOnLanding: true
+      iconURL: "/assets/logo.svg"
       conversation_starters:
         - "What is our parental leave policy?"
         - "I joined three months ago. Am I eligible for paid leave?"

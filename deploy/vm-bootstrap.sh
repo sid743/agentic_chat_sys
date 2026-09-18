@@ -65,6 +65,25 @@ log "Building and starting the containers (first run pulls ~3 GB, allow a few mi
 $DOCKER compose up -d --build
 $DOCKER compose ps
 
+log "Making sure the demo account exists"
+env_value() { grep -E "^$1=" .env | head -1 | cut -d= -f2-; }
+DEMO_EMAIL="$(env_value DEMO_USER_EMAIL)"
+DEMO_NAME="$(env_value DEMO_USER_NAME)"
+DEMO_PASSWORD_VALUE="$(env_value DEMO_USER_PASSWORD)"
+if [ -n "$DEMO_EMAIL" ] && [ -n "$DEMO_PASSWORD_VALUE" ]; then
+  for _ in $(seq 1 30); do
+    $DOCKER compose exec -T librechat node -e "process.exit(0)" >/dev/null 2>&1 && break
+    sleep 2
+  done
+  if $DOCKER compose exec -T librechat npm run create-user -- \
+       "$DEMO_EMAIL" "${DEMO_NAME:-Demo User}" "${DEMO_EMAIL%%@*}" "$DEMO_PASSWORD_VALUE" >/dev/null 2>&1; then
+    echo "created $DEMO_EMAIL"
+  else
+    echo "$DEMO_EMAIL already exists (or LibreChat is still starting) - carrying on"
+  fi
+  $DOCKER compose restart gateway >/dev/null 2>&1 || true
+fi
+
 log "Checking the agent core"
 python3 scripts/smoke_test.py --url http://localhost:8088 || true
 
@@ -75,11 +94,12 @@ Done.
   UI:       http://${IP:-<vm-ip>}:3080      (open tcp:3080 in the cloud firewall first)
   Console:  http://localhost:8088           (bound to localhost only - reach it over an SSH tunnel)
 
-Next steps:
-  1. Open the UI and register the first account; it becomes the admin.
-  2. Close the door behind you:
-       sed -i 's/^ALLOW_REGISTRATION=.*/ALLOW_REGISTRATION=false/' .env && $DOCKER compose up -d
-  3. Logs:     $DOCKER compose logs -f librechat
-     Restart:  $DOCKER compose up -d
-     Stop:     $DOCKER compose down
+Visitors land straight in a chat as the demo user - no login page.
+
+Useful:
+  Logs:     $DOCKER compose logs -f gateway   (or librechat, agent-core)
+  Restart:  $DOCKER compose up -d             (applies .env changes)
+  Stop:     $DOCKER compose down
+  Normal login page instead of auto sign-in:
+       sed -i 's/^GATEWAY_AUTO_LOGIN=.*/GATEWAY_AUTO_LOGIN=false/' .env && $DOCKER compose up -d
 EOF

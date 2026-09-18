@@ -30,6 +30,7 @@ GENERATED = {
     "JWT_REFRESH_SECRET": lambda: secrets.token_hex(32),
     "MEILI_MASTER_KEY": lambda: secrets.token_hex(16),
     "AGENT_CORE_API_KEY": lambda: "ac-" + secrets.token_urlsafe(24),
+    "DEMO_USER_PASSWORD": lambda: secrets.token_urlsafe(18),
 }
 
 
@@ -72,6 +73,18 @@ def main() -> int:
         created = True
 
     lines = read_lines(TARGET)
+
+    # Bring in settings added to .env.example since this .env was written, without
+    # touching anything already in it.
+    present = {m.group(1) for m in (re.match(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=", line) for line in lines) if m}
+    added = []
+    for line in read_lines(EXAMPLE):
+        match = re.match(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$", line)
+        if match and match.group(1) not in present:
+            lines.append(f"{match.group(1)}={match.group(2).strip()}")
+            present.add(match.group(1))
+            added.append(match.group(1))
+
     filled = [key for key, make in GENERATED.items() if set_value(lines, key, make(), only_if_empty=True)]
 
     explicit = {
@@ -93,6 +106,8 @@ def main() -> int:
     TARGET.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     print(("Created" if created else "Updated") + f" {TARGET}")
+    if added:
+        print("Added new settings from .env.example: " + ", ".join(added))
     if filled:
         print("Generated secrets: " + ", ".join(filled))
     print(

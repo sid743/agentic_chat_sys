@@ -83,7 +83,9 @@ notepad .env                           # add keys / pick a default model (see be
 docker compose up -d --build
 ```
 
-- LibreChat: http://localhost:3080. Register an account; the first account becomes the admin.
+- The UI: http://localhost:3080. It opens straight in a chat as the demo user - a small gateway
+  (`core/agentic_core/gateway.py`) signs that account in, serves the icons from `deploy/brand` and
+  sets the page title from `APP_TITLE`. Set `GATEWAY_AUTO_LOGIN=false` for the normal login page.
 - Agent console: http://localhost:8088. Paste `AGENT_CORE_API_KEY` from `.env` into the key box.
 
 In LibreChat, pick **HR Multi-Agent Assistant** (or the **HR Multi-Agent** endpoint and a model) and ask:
@@ -281,6 +283,7 @@ agenticsys/
 ├── .env.example                shared settings (scripts/setup_env.py creates .env)
 ├── librechat/librechat.yaml    LibreChat config: HR Multi-Agent endpoint, Groq, Gemini, Ollama, LM Studio, model spec
 ├── deploy/vm-bootstrap.sh      one-command setup on a fresh cloud VM (see deploy/README.md)
+├── deploy/brand/               logo and icons the gateway serves in place of LibreChat's
 ├── scripts/setup_env.py        creates .env and fills in generated secrets
 ├── scripts/smoke_test.py       checks a running agent core with the demo questions
 ├── docs/images/                screenshots
@@ -298,6 +301,7 @@ agenticsys/
     │   ├── db/                 schema and seed data
     │   ├── rag/                parsing, chunking, embeddings, Qdrant + BM25
     │   ├── service.py          request handling, identity, uploads, commands, run log
+    │   ├── gateway.py          demo front door: auto sign-in and branding over LibreChat
     │   └── static/admin.html   agent console
     └── tests/                  pytest suite (offline; fake OpenAI server for the HTTP path)
 ```
@@ -323,9 +327,9 @@ agenticsys/
 - The offline model makes routing and answers deterministic, which is useful for tests and dry runs. It is not a real LLM.
 - The default `hash` embeddings are lexical. Use fastembed or an embeddings API for semantic retrieval.
 - What was tested while building this:
-  - The Python test suite (96 tests, offline). It includes a fake OpenAI-compatible server for the tool-calling, JSON-fallback and streaming paths.
+  - The Python test suite (105 tests, offline). It includes a fake OpenAI-compatible server for the tool-calling, JSON-fallback and streaming paths.
   - `librechat.yaml`, checked against LibreChat's own config schema for v0.8.7 (current stable) and v0.8.8-rc3.
   - The agent core started the way its container starts it: a clean Python 3.12 install from `requirements.txt`, the same files, the environment from a fresh `setup_env.py` run, the compose health check, and `scripts/smoke_test.py`.
   - The Docker images themselves were not built or started, because the build sandbox could not reach any container registry. `docker compose config` passes.
-  - An end-to-end run of LibreChat v0.8.8-rc3 (built from source, with FerretDB standing in for MongoDB) against the agent core in a browser. It covered the model spec and model list, identity from the login email, the conversation id header, a PDF upload scoped to its conversation, the Thoughts trace, the workflow hand-off to notifications, `/act-as` with manager approvals, and title generation.
+  - An end-to-end run of LibreChat v0.8.8-rc3 (built from source, with FerretDB standing in for MongoDB) against the agent core in a browser, through the gateway: no login page, the demo account signed in automatically, our icons and title, and a streamed answer with citations. It also covered the model spec and model list, identity from the login email, the conversation id header, a PDF upload scoped to its conversation, the Thoughts trace, the workflow hand-off to notifications, `/act-as` with manager approvals, and title generation.
   - Real Groq, OpenAI and Ollama calls could not be made from the build sandbox (no outbound access), so those were covered by the fake server only. Try one question per provider after adding your keys.

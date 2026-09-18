@@ -128,24 +128,34 @@ and runs the smoke test. First run takes several minutes.
 
 Re-running it is safe, and it is the fix if the public IP ever changes.
 
-## 4. Lock it down
+## 4. Open it
 
-Open `http://YOUR_VM_IP:3080`, register your account (the first one is admin), then:
+`http://YOUR_VM_IP:3080` lands straight in a chat as the demo user. There is no login or signup
+page: a small gateway in front of LibreChat signs that account in, serves the icons from
+`deploy/brand` and puts `APP_TITLE` in the tab. The bootstrap script created the account using the
+password it generated in `.env` (`DEMO_USER_PASSWORD`), and registration is off.
+
+Be clear-eyed about what that means with the port open to the internet: anyone who finds the IP is
+that demo user and can spend your model quota. Keep the data synthetic, keep an eye on provider
+usage, and `az vm deallocate` the box when you are not showing it.
+
+To get the normal login page back:
 
 ```bash
-sed -i 's/^ALLOW_REGISTRATION=.*/ALLOW_REGISTRATION=false/' .env
+sed -i 's/^GATEWAY_AUTO_LOGIN=.*/GATEWAY_AUTO_LOGIN=false/' .env
 docker compose up -d
 ```
-
-Without this, anyone who finds the IP can sign up and spend your model quota.
 
 ## 5. Day to day
 
 ```bash
-docker compose logs -f librechat          # or agent-core
+docker compose logs -f gateway            # or librechat, agent-core
 docker compose up -d                      # apply .env changes
 docker compose down                       # stop the stack, keep the data
 ```
+
+The gateway is the only container with a published port. LibreChat sits behind it on the internal
+network, so the UI is always the gateway's version: branded, and already signed in.
 
 The admin console stays closed to the internet. Reach it from your own machine with an SSH tunnel,
 then open `http://localhost:8088`:

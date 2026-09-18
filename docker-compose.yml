@@ -58,8 +58,13 @@ services:
         condition: service_started
       agent-core:
         condition: service_healthy
-    ports:
-      - "3080:3080"
+    # The gateway below publishes 3080. To reach LibreChat directly instead
+    # (no auto-login, LibreChat's own branding), uncomment these two lines and
+    # remove the gateway service.
+    # ports:
+    #   - "3080:3080"
+    expose:
+      - "3080"
     env_file: .env
     environment:
       - HOST=0.0.0.0
@@ -81,6 +86,30 @@ services:
       - librechat-uploads:/app/uploads
       - librechat-logs:/app/logs
       - librechat-data:/app/data
+    restart: unless-stopped
+
+  # Demo front door: auto sign-in and our own icons/title in front of LibreChat.
+  gateway:
+    build: ./core
+    image: agenticsys/agent-core:latest
+    container_name: hr-gateway
+    depends_on:
+      - librechat
+    env_file: .env
+    environment:
+      - GATEWAY_UPSTREAM=http://librechat:3080
+      - BRAND_DIR=/app/brand
+    command: ["python", "-m", "uvicorn", "agentic_core.gateway:app", "--host", "0.0.0.0", "--port", "3080"]
+    ports:
+      - "3080:3080"
+    volumes:
+      - ./deploy/brand:/app/brand:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3080/gateway/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
     restart: unless-stopped
 
   mongodb:
