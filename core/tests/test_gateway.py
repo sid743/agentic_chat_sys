@@ -35,6 +35,13 @@ def upstream(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"name": "LibreChat", "short_name": "LibreChat", "icons": []})
     if path.startswith("/assets/"):
         return httpx.Response(200, content=b"upstream-bytes", headers={"content-type": "image/png"})
+    if path == "/api/auth/refresh":
+        # LibreChat rejects a stale or missing session
+        if "refreshToken=good" in request.headers.get("cookie", ""):
+            return httpx.Response(200, json={"token": "still-valid"})
+        return httpx.Response(401, json={"message": "Refresh token not provided"})
+    if path == "/api/auth/logout":
+        return httpx.Response(200, json={"message": "logged out upstream"})
     if path == "/api/messages":
         return httpx.Response(200, json={"ok": True})
     if path == "/api/stream":
@@ -112,3 +119,35 @@ def test_api_and_streams_pass_through(client):
 
 def test_health_endpoint(client):
     assert client.get("/gateway/health").json()["status"] == "ok"
+
+
+def test_expired_session_is_replaced_instead_of_showing_the_login_form(client):
+    # The login form is a route inside the app, so the only fix is a refresh that works.
+    reply = client.post("/api/auth/refresh", headers={"cookie": "refreshToken=stale"})
+    assert reply.status_code == 200
+    assert reply.json()["token"] == "jwt"
+    assert any(c.startswith("refreshToken=") for c in reply.headers.get_list("set-cookie"))
+
+
+def test_valid_session_refreshes_normally(client):
+    reply = client.post("/api/auth/refresh", headers={"cookie": "refreshToken=good"})
+    assert reply.status_code == 200
+    assert reply.json()["token"] == "still-valid"
+    assert not reply.headers.get_list("set-cookie")
+
+
+def test_logout_does_not_strand_the_next_visitor(client):
+    reply = client.post("/api/auth/logout", headers={"cookie": "refreshToken=good"})
+    assert reply.status_code == 200
+    assert not reply.headers.get_list("set-cookie")
+    # the session is untouched, so the app signs straight back in
+    assert client.post("/api/auth/refresh", headers={"cookie": "refreshToken=good"}).status_code == 200
+
+
+def test_health_reports_a_broken_demo_account(client, monkeypatch):
+    assert client.get("/gateway/health").json()["demo_login"] == "ok"
+    monkeypatch.setattr(gateway, "DEMO_PASSWORD", "wrong-password")
+    body = client.get("/gateway/health").json()
+    assert body["status"] == "degraded"
+    assert "HTTP 401" in body["demo_login"]
+    assert "create-user" in body["fix"]

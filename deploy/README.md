@@ -146,9 +146,20 @@ sed -i 's/^GATEWAY_AUTO_LOGIN=.*/GATEWAY_AUTO_LOGIN=false/' .env
 docker compose up -d
 ```
 
-### If the demo account is missing
+### If the UI shows a login page
 
-The bootstrap creates it, but if the UI shows a login page, do it by hand:
+One command says why:
+
+```bash
+curl -s http://localhost:3080/gateway/health
+```
+
+`"demo_login": "ok"` means the gateway can sign the demo user in, and nobody should ever see a login
+form: a stale cookie, a direct visit to `/login` and even an in-app sign-out all end up back in the
+chat. Anything else names the problem and prints the command that fixes it. (From outside the VM
+that endpoint only returns `{"status":"ok"}` - the details are for whoever runs the box.)
+
+Almost always the account does not exist yet. Create it by hand:
 
 ```bash
 cd ~/agenticsys

@@ -22,6 +22,7 @@ Settings (all from the environment / .env):
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 import os
@@ -119,8 +120,12 @@ def _response_headers(upstream: httpx.Response, drop_body_headers: bool = False)
     return out
 
 
-async def demo_cookies(client: httpx.AsyncClient) -> list[str]:
-    """Sign the demo user in upstream and return the cookies LibreChat set."""
+async def demo_session(client: httpx.AsyncClient) -> tuple[list[str], bytes, str]:
+    """Sign the demo user in upstream.
+
+    Returns (cookies, body, problem). `problem` is empty when it worked, and
+    otherwise says why - which is what /gateway/health reports.
+    """
     try:
         reply = await client.post(
             f"{UPSTREAM}/api/auth/login",
@@ -128,15 +133,44 @@ async def demo_cookies(client: httpx.AsyncClient) -> list[str]:
             headers={"origin": PUBLIC_URL, "referer": f"{PUBLIC_URL}/", "content-type": "application/json"},
         )
     except httpx.HTTPError as exc:
-        log.warning("Demo sign-in could not reach LibreChat: %s", exc)
-        return []
+        problem = f"cannot reach LibreChat: {exc}"
+        log.warning("Demo sign-in %s", problem)
+        return [], b"", problem
     if reply.status_code != 200:
+        problem = f"HTTP {reply.status_code} for {DEMO_EMAIL}: {reply.text[:160]}"
         log.warning(
-            "Demo sign-in for %s failed: HTTP %s %s",
-            DEMO_EMAIL, reply.status_code, reply.text[:200],
+            "Demo sign-in failed (%s). Create the account: "
+            "docker compose exec -T librechat npm run create-user -- "
+            "<email> \"Demo User\" <username> <password> --email-verified=true",
+            problem,
         )
-        return []
-    return reply.headers.get_list("set-cookie")
+        return [], b"", problem
+    return reply.headers.get_list("set-cookie"), reply.content, ""
+
+
+async def demo_cookies(client: httpx.AsyncClient) -> list[str]:
+    cookies, _body, _problem = await demo_session(client)
+    return cookies
+
+
+async def _proxy_json(client: httpx.AsyncClient, request: Request, path: str) -> Response | None:
+    """Forward a small JSON request and buffer the reply (used for /api/auth/refresh)."""
+    try:
+        reply = await client.request(
+            request.method,
+            f"{UPSTREAM}{path}",
+            headers=_forward_headers(request),
+            content=await request.body(),
+        )
+    except httpx.HTTPError as exc:
+        log.warning("Upstream %s unreachable: %s", UPSTREAM, exc)
+        return None
+    body = reply.content  # httpx already decoded any compression, so re-state the length
+    response = Response(body, status_code=reply.status_code)
+    response.raw_headers = _response_headers(reply, drop_body_headers=True) + [
+        (b"content-length", str(len(body)).encode())
+    ]
+    return response
 
 
 def wants_html(request: Request) -> bool:
@@ -158,6 +192,28 @@ async def handle(request: Request) -> Response:
     # 2. Sign-in pages are dead ends once auto-login is on.
     if AUTO_LOGIN and request.method == "GET" and any(path == p or path.startswith(p + "/") for p in AUTH_PAGES):
         return RedirectResponse("/", status_code=302)
+
+    # 3. Keep the session alive. The login form is a page inside the app, not a URL we
+    #    can redirect, so the only way to never see it is to make sure the app's session
+    #    check always succeeds: when LibreChat rejects the refresh, sign in again here.
+    if AUTO_LOGIN and request.method == "POST" and path == "/api/auth/refresh":
+        refreshed = await _proxy_json(client, request, path)
+        if refreshed is not None and refreshed.status_code == 200:
+            return refreshed
+        cookies, body, _problem = await demo_session(client)
+        if not cookies:
+            return refreshed if refreshed is not None else Response(status_code=401)
+        response = Response(body, status_code=200, media_type="application/json")
+        response.raw_headers = [
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(body)).encode()),
+            *[(b"set-cookie", c.encode("latin-1")) for c in cookies],
+        ]
+        return response
+
+    # 4. Signing out of a shared demo account would only strand the next visitor.
+    if AUTO_LOGIN and request.method == "POST" and path == "/api/auth/logout":
+        return Response(b'{"message":"ok"}', status_code=200, media_type="application/json")
 
     url = f"{UPSTREAM}{path}"
     if request.url.query:
@@ -224,9 +280,33 @@ async def handle(request: Request) -> Response:
     return response
 
 
+def _is_local(request: Request) -> bool:
+    """True for loopback and private callers; the details are for the operator only."""
+    host = request.client.host if request.client else ""
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return True  # test clients and unix sockets
+    return address.is_loopback or address.is_private
+
+
 async def healthz(request: Request) -> Response:
-    return Response(json.dumps({"status": "ok", "upstream": UPSTREAM, "auto_login": AUTO_LOGIN}),
-                    media_type="application/json")
+    """Says whether the demo sign-in actually works, which is the thing that breaks."""
+    if not _is_local(request):
+        return Response(json.dumps({"status": "ok"}), media_type="application/json")
+    data: dict[str, Any] = {"status": "ok", "upstream": UPSTREAM, "auto_login": AUTO_LOGIN}
+    if AUTO_LOGIN:
+        data["demo_user"] = DEMO_EMAIL
+        _cookies, _body, problem = await demo_session(request.app.state.client)
+        data["demo_login"] = "ok" if not problem else problem
+        if problem:
+            data["status"] = "degraded"
+            data["fix"] = (
+                'docker compose exec -T librechat npm run create-user -- '
+                f'"{DEMO_EMAIL}" "Demo User" "{DEMO_EMAIL.split("@")[0]}" "<DEMO_USER_PASSWORD from .env>" '
+                "--email-verified=true </dev/null"
+            )
+    return Response(json.dumps(data), media_type="application/json")
 
 
 @asynccontextmanager
