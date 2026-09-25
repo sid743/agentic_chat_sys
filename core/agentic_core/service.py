@@ -17,8 +17,10 @@ from sqlalchemy import select
 
 from .agents.config import AgentsConfig
 from .agents.context import Actor, RequestContext
+from .agents.flow import flow_lines
 from .agents.orchestrator import Orchestrator
 from .attachments import normalize_messages
+from .chatlog import ChatLog, turn_record
 from .db.models import AgentRun, ConversationState, Employee
 from .db.seed import seed_database
 from .db.session import session_scope
@@ -104,6 +106,11 @@ class ChatService:
         self.knowledge = knowledge
         self.agents = agents
         self.orchestrator = Orchestrator(settings, registry, agents)
+        self.chat_log = ChatLog(
+            settings.resolved_chat_log_dir,
+            enabled=settings.chat_log,
+            tool_result_chars=settings.chat_log_tool_result_chars,
+        )
 
     # ------------------------------------------------------------------ public API
     async def stream(self, req: ChatRequest) -> AsyncIterator[StreamEvent]:
@@ -233,7 +240,10 @@ class ChatService:
             self._save_run(request, message, text, "error", int((time.monotonic() - started) * 1000), Usage(), [], trace)
             return {"status": "error", "error": str(exc), "run_id": run_id, "usage": Usage()}
         latency = int((time.monotonic() - started) * 1000)
-        self._save_run(request, message, outcome.answer, outcome.status, latency, outcome.usage, outcome.results, trace)
+        self._save_run(
+            request, message, outcome.answer, outcome.status, latency,
+            outcome.usage, outcome.results, trace, plan=outcome.plan,
+        )
         return {
             "status": outcome.status,
             "run_id": run_id,
@@ -257,7 +267,7 @@ class ChatService:
             )
             session.flush()
 
-    def _save_run(self, request, message, answer, status, latency, usage, results, trace) -> None:
+    def _save_run(self, request, message, answer, status, latency, usage, results, trace, plan=None) -> None:
         try:
             with session_scope() as session:
                 session.add(
@@ -279,6 +289,24 @@ class ChatService:
                 )
         except Exception:  # noqa: BLE001
             log.exception("Failed to persist run %s", request.run_id)
+        try:
+            self.chat_log.write(
+                turn_record(
+                    request=request,
+                    message=message,
+                    answer=answer,
+                    status=status,
+                    latency_ms=latency,
+                    usage=usage,
+                    results=results,
+                    trace=trace,
+                    plan=plan,
+                    flow=flow_lines(plan or {}, results, merged=True) if plan else [],
+                    tool_result_chars=self.settings.chat_log_tool_result_chars,
+                )
+            )
+        except Exception:  # noqa: BLE001
+            log.exception("Failed to write the chat log for run %s", request.run_id)
 
     async def _title(self, req: ChatRequest, on_content: Callable[[str], None]) -> dict:
         prompt = next((m.get("content") for m in req.messages if isinstance(m.get("content"), str)), "")

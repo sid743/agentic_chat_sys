@@ -103,6 +103,20 @@ async def get_run(run_id: str):
         return _row(run)
 
 
+@router.get("/api/logs", dependencies=[Depends(require_admin)])
+async def list_logs(limit: int = Query(200, ge=1, le=1000), service: ChatService = Depends(get_service)):
+    """The JSON transcripts on disk, newest first."""
+    return {"enabled": service.chat_log.enabled, "directory": str(service.chat_log.directory), "files": service.chat_log.files(limit)}
+
+
+@router.get("/api/logs/{date}/{conversation_id}", dependencies=[Depends(require_admin)])
+async def read_log(date: str, conversation_id: str, service: ChatService = Depends(get_service)):
+    turns = service.chat_log.read(date, conversation_id)
+    if not turns:
+        raise HTTPException(404, "No log for that conversation")
+    return {"date": date, "conversation_id": conversation_id, "turns": turns}
+
+
 @router.get("/api/tables", dependencies=[Depends(require_admin)])
 async def tables():
     return {"tables": list(BROWSABLE_TABLES)}

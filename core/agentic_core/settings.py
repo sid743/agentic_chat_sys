@@ -81,6 +81,10 @@ class Settings(BaseSettings):
     answer_footer: bool = True
     # Plain-text LangGraph path under every answer (route -> agents -> synthesize).
     show_flow: bool = True
+    # JSON transcript of every turn on disk (data_dir/chatlogs/<date>/<conversation>.jsonl).
+    chat_log: bool = True
+    chat_log_dir: Path | None = None
+    chat_log_tool_result_chars: int = 2000
     auto_seed: bool = True
 
     @field_validator("demo_today", mode="before")
@@ -96,6 +100,10 @@ class Settings(BaseSettings):
         if self.database_url:
             return self.database_url
         return f"sqlite:///{(self.data_dir / 'hr_demo.db').as_posix()}"
+
+    @property
+    def resolved_chat_log_dir(self) -> Path:
+        return self.chat_log_dir or (self.data_dir / "chatlogs")
 
     @property
     def resolved_qdrant_path(self) -> str:

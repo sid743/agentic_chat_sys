@@ -1,9 +1,14 @@
 # Test deployment on a small cloud VM
 
 One small VM runs the whole stack: LibreChat, MongoDB, Meilisearch and the agent core.
-The walkthrough below uses **Azure**, a spot `Standard_B2s` (2 vCPU, 4 GB) in **Central India**,
-and the portal's Cloud Shell, so nothing needs installing locally. Google Cloud commands for the
-same setup are at the end.
+The walkthrough below uses **Azure**, an on-demand `Standard_B2als_v2` (2 vCPU, 4 GB) in
+**Central India** - about $0.025/hour, roughly $18/month if you leave it running - and the portal's
+Cloud Shell, so nothing needs installing locally. Google Cloud commands for the same setup are at
+the end.
+
+Spot VMs cost about a third of that, but Azure reclaims them whenever it wants the capacity back,
+which deallocates the VM and takes the demo offline until someone starts it again. For a link you
+hand to other people, that trade is not worth $12 a month.
 
 **This is a test setup.** It serves plain HTTP, so passwords and chats travel unencrypted.
 Use a throwaway password, turn registration off once your account exists, and keep real data out
@@ -24,14 +29,17 @@ az vm create \
   --resource-group hr-demo-rg \
   --name hr-demo \
   --image Ubuntu2404 \
-  --size Standard_B2s \
-  --priority Spot --eviction-policy Deallocate --max-price -1 \
+  --size Standard_B2als_v2 \
   --admin-username azureuser \
   --generate-ssh-keys \
   --public-ip-sku Standard \
   --os-disk-size-gb 32
 
 az vm open-port --resource-group hr-demo-rg --name hr-demo --port 3080 --priority 1001
+
+# a stable name beats an IP, and it survives a stop/start
+az network public-ip update -g hr-demo-rg -n hr-demoPublicIP --dns-name hr-demo-$RANDOM -o none
+az network public-ip show -g hr-demo-rg -n hr-demoPublicIP --query dnsSettings.fqdn -o tsv
 az vm show -d -g hr-demo-rg -n hr-demo --query publicIps -o tsv
 ```
 
@@ -67,8 +75,9 @@ create_vm centralindia Standard_B2als_v2 $SPOT \
   || echo "Nothing worked - run the capacity check below."
 ```
 
-All 4 GB / 2 vCPU except `Standard_D2as_v5`, which is 8 GB and costs more; the last two attempts
-are on-demand rather than spot, because spot capacity runs out first.
+All on-demand and 4 GB / 2 vCPU, except `Standard_D2as_v5` which is 8 GB and costs more. Add
+`--priority Spot --eviction-policy Deallocate --max-price -1` to any of them if you want spot pricing
+and can live with being reclaimed.
 
 If none of them work, look at what the subscription is actually allowed:
 
@@ -130,56 +139,47 @@ Re-running it is safe, and it is the fix if the public IP ever changes.
 
 ## 4. Open it
 
-`http://YOUR_VM_IP:3080` lands straight in a chat as the demo user. There is no login or signup
-page: a small gateway in front of LibreChat signs that account in, serves the icons from
-`deploy/brand` and puts `APP_TITLE` in the tab. The bootstrap script created the account using the
-password it generated in `.env` (`DEMO_USER_PASSWORD`), and registration is off.
+`http://YOUR_VM_IP:3080` shows the normal sign-in page, with sign-up enabled, wearing our icons and
+title. Register an account and you are in. Turn `ALLOW_REGISTRATION=false` once your accounts exist,
+or anyone who finds the IP can sign up and spend your model quota.
 
-Be clear-eyed about what that means with the port open to the internet: anyone who finds the IP is
-that demo user and can spend your model quota. Keep the data synthetic, keep an eye on provider
-usage, and `az vm deallocate` the box when you are not showing it.
+### Optional: no login page at all
 
-To get the normal login page back:
-
-```bash
-sed -i 's/^GATEWAY_AUTO_LOGIN=.*/GATEWAY_AUTO_LOGIN=false/' .env
-docker compose up -d
-```
-
-### If the UI shows a login page
-
-One command says why:
+The gateway can sign one shared demo account in for every visitor, so the link opens straight into a
+chat. It needs that account to exist inside LibreChat first, which is the part that bites - so set it
+up in this order:
 
 ```bash
-curl -s http://localhost:3080/gateway/health
-```
-
-`"demo_login": "ok"` means the gateway can sign the demo user in, and nobody should ever see a login
-form: a stale cookie, a direct visit to `/login` and even an in-app sign-out all end up back in the
-chat. Anything else names the problem and prints the command that fixes it. (From outside the VM
-that endpoint only returns `{"status":"ok"}` - the details are for whoever runs the box.)
-
-Almost always the account does not exist yet. Create it by hand:
-
-```bash
-cd ~/agenticsys
 EMAIL=$(grep ^DEMO_USER_EMAIL= .env | cut -d= -f2-)
 PASS=$(grep ^DEMO_USER_PASSWORD= .env | cut -d= -f2-)
 docker compose exec -T librechat npm run create-user -- \
   "$EMAIL" "Demo User" "${EMAIL%%@*}" "$PASS" --email-verified=true </dev/null
-docker compose restart gateway
+
+sed -i 's/^GATEWAY_AUTO_LOGIN=.*/GATEWAY_AUTO_LOGIN=true/' .env
+docker compose up -d
+curl -s http://localhost:3080/gateway/health      # wants "demo_login": "ok"
 ```
 
 `--email-verified=true` matters: without it LibreChat's CLI asks a question, and with no terminal
-attached it waits for an answer forever. Check it worked:
+attached it waits for an answer forever.
 
-```bash
-curl -s -o /dev/null -w '%{http_code}\n' -X POST http://localhost:3080/api/auth/login \
-  -H "origin: $(grep ^DOMAIN_CLIENT= .env | cut -d= -f2-)" -H 'content-type: application/json' \
-  -d "{\"email\":\"$EMAIL\",\"password\":\"$PASS\"}"
-```
+Only turn it on once that health check says `ok`. If it says anything else, everyone gets a login
+page for an account nobody knows the password to. `GATEWAY_AUTO_LOGIN=false` puts the normal page
+back with no rebuild.
 
-`200` means the demo sign-in will work.
+And with the port open to the internet, remember that a shared demo account means anyone who finds
+the IP is that user and spends your model quota.
+
+### A login page when you expected none
+
+`curl -s http://localhost:3080/gateway/health` says why. `"demo_login": "ok"` means auto sign-in is
+working; anything else names the problem and prints the command that fixes it. (From outside the VM
+that endpoint only returns `{"status":"ok"}` - the details are for whoever runs the box.)
+
+Usually the account does not exist, or `.env` holds a different password than the one in MongoDB.
+Either way the fix is the create-user command above. Meanwhile
+`sed -i 's/^GATEWAY_AUTO_LOGIN=.*/GATEWAY_AUTO_LOGIN=false/' .env && docker compose up -d` gives
+everyone the normal login page back.
 
 ## 5. Day to day
 
@@ -199,17 +199,27 @@ then open `http://localhost:8088`:
 ssh -L 8088:localhost:8088 azureuser@YOUR_VM_IP
 ```
 
-Cost control, and the one Azure trap worth knowing: **"Stop" in the portal still bills for the VM
-unless it is deallocated.** Use:
+Pull the JSON transcripts off the box whenever you want them:
 
 ```bash
-az vm deallocate -g hr-demo-rg -n hr-demo     # stops the charges (disk still costs a little)
+docker compose cp agent-core:/app/var/chatlogs ./chatlogs
+```
+
+### Cost
+
+The one Azure trap worth knowing: **"Stop" in the portal still bills for the VM unless it is
+deallocated.**
+
+```bash
+az vm deallocate -g hr-demo-rg -n hr-demo     # stops the compute charge (the disk still costs a little)
 az vm start      -g hr-demo-rg -n hr-demo     # bring it back
 az group delete  -n hr-demo-rg --yes          # delete everything when you are done
 ```
 
-A Standard SKU public IP keeps its address across a deallocate/start cycle, so the URL stays put.
-A spot VM can be evicted at any time, which deallocates it; starting it again is the whole recovery.
+If the demo only needs to be up during working hours, the portal's built-in auto-shutdown
+(VM -> Operations -> Auto-shutdown) is free and roughly halves the bill; a 1-year savings plan takes
+another 30-40% off if the box is staying for months. A Standard SKU public IP keeps its address
+across deallocate/start, so the URL survives either way.
 
 ## Sizing notes
 

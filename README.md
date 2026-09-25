@@ -85,12 +85,12 @@ notepad .env                           # add keys / pick a default model (see be
 docker compose up -d --build
 ```
 
-- The UI: http://localhost:3080. It opens straight in a chat as the demo user - a small gateway
-  (`core/agentic_core/gateway.py`) signs that account in, serves the icons from `deploy/brand` and
-  sets the page title from `APP_TITLE`. Everyone who opens the link shares that one account, and the
-  login form is unreachable: stale sessions are renewed, `/login` redirects, and signing out is ignored.
-  `curl localhost:3080/gateway/health` reports whether the demo sign-in works.
-  Set `GATEWAY_AUTO_LOGIN=false` for the normal login page.
+- The UI: http://localhost:3080. Register an account and sign in as usual. A small gateway
+  (`core/agentic_core/gateway.py`) sits in front: it serves the icons from `deploy/brand` and sets the
+  page title from `APP_TITLE`. With `GATEWAY_AUTO_LOGIN=true` it also signs one shared demo account in
+  for every visitor, so the link opens straight into a chat and the login form becomes unreachable -
+  create that account first (see `deploy/README.md`) and check `curl localhost:3080/gateway/health`
+  reports `"demo_login": "ok"` before turning it on.
 - Agent console: http://localhost:8088. Paste `AGENT_CORE_API_KEY` from `.env` into the key box.
 
 In LibreChat, pick **HR Multi-Agent Assistant** (or the **HR Multi-Agent** endpoint and a model) and ask:
@@ -237,6 +237,36 @@ Any other OpenAI-compatible client can use the core too: base URL `http://localh
 
 ---
 
+## Chat logs
+
+Every turn is also written to disk as JSON, one object per line, one file per conversation per day:
+
+```
+core/var/chatlogs/2026-09-25/conv-9f2c1b.jsonl
+```
+
+Each line carries the whole turn: the question and the answer, who asked and as which employee
+(and how that identity was resolved), the model, the router's plan and reason, the flow line, every
+agent with its task, timing and citations, every tool call with its arguments and result, token
+counts, uploads, and the full trace. Roughly 10-15 KB per turn.
+
+```bash
+# what happened today, one line each
+jq -r '[.ts, .actor.id, .status, (.counts.tool_calls|tostring), .message] | @tsv' var/chatlogs/*/*.jsonl
+
+# every tool call that was refused
+jq -r '.agents[].tools[] | select(.ok == false) | [.name, (.arguments|tostring)] | @tsv' var/chatlogs/*/*.jsonl
+```
+
+From the admin console's API: `GET /api/logs` lists the files, `GET /api/logs/{date}/{conversation}`
+returns a conversation's turns as JSON. In Docker the files live in the `agent-core-data` volume;
+copy them out with `docker compose cp agent-core:/app/var/chatlogs ./chatlogs`.
+
+The same records are in the `agent_runs` table - these files are the portable copy, and `CHAT_LOG=false`
+turns them off.
+
+---
+
 ## Guardrails that live in code (not in prompts)
 
 - **Data access (HR-POL-004 §4).** An employee sees only their own leave data, a manager sees their direct reports' data, and HR sees everyone's. The directory lookup returns only directory fields (name, title, department, location, manager, email).
@@ -260,6 +290,9 @@ Any other OpenAI-compatible client can use the core too: base URL `http://localh
 | `DEMO_TODAY` | 2026-09-17 | Fixed date for the demo data; empty = real date |
 | `EMBEDDINGS_PROVIDER`, `EMBEDDINGS_MODEL`, `EMBEDDINGS_BASE_URL`, `EMBEDDINGS_API_KEY` | hash | Retrieval embeddings |
 | `QDRANT_URL` | empty | Use a Qdrant server (`docker compose --profile qdrant up -d`) instead of the embedded store |
+| `CHAT_LOG` | `true` | Write a JSON transcript of every turn to `var/chatlogs/<date>/<conversation>.jsonl`. |
+| `CHAT_LOG_DIR` | `var/chatlogs` | Where those files go. |
+| `CHAT_LOG_TOOL_RESULT_CHARS` | `2000` | Tool results longer than this are stored as a summary plus a preview. |
 | `SHOW_FLOW` | `true` | Plain-text graph of the turn under every answer (`START -> route -> ... -> END`). |
 | `AGENT_CORE_BIND` | `127.0.0.1` | Host interface for the console port in Docker. `0.0.0.0` exposes it beyond the machine. |
 | `DATABASE_URL` | SQLite in `core/var` | e.g. `postgresql+psycopg://...` (`pip install psycopg[binary]`) |
@@ -309,6 +342,7 @@ agenticsys/
     │   ├── service.py          request handling, identity, uploads, commands, run log
     │   ├── gateway.py          demo front door: auto sign-in and branding over LibreChat
     │   ├── agents/flow.py      the graph path drawn under each answer
+    │   ├── chatlog.py          JSON transcript of every turn (JSONL on disk)
     │   └── static/admin.html   agent console
     └── tests/                  pytest suite (offline; fake OpenAI server for the HTTP path)
 ```
@@ -334,7 +368,7 @@ agenticsys/
 - The offline model makes routing and answers deterministic, which is useful for tests and dry runs. It is not a real LLM.
 - The default `hash` embeddings are lexical. Use fastembed or an embeddings API for semantic retrieval.
 - What was tested while building this:
-  - The Python test suite (116 tests, offline). It includes a fake OpenAI-compatible server for the tool-calling, JSON-fallback and streaming paths.
+  - The Python test suite (123 tests, offline). It includes a fake OpenAI-compatible server for the tool-calling, JSON-fallback and streaming paths.
   - `librechat.yaml`, checked against LibreChat's own config schema for v0.8.7 (current stable) and v0.8.8-rc3.
   - The agent core started the way its container starts it: a clean Python 3.12 install from `requirements.txt`, the same files, the environment from a fresh `setup_env.py` run, the compose health check, and `scripts/smoke_test.py`.
   - The Docker images themselves were not built or started, because the build sandbox could not reach any container registry. `docker compose config` passes.
