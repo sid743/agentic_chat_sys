@@ -128,7 +128,9 @@ class ModelRegistry:
                     resp = await client.get(url, headers=headers)
             resp.raise_for_status()
             data = resp.json().get("data", [])
-            ids = sorted({str(item.get("id")) for item in data if item.get("id")})
+            # Gemini lists its models as "models/gemini-3.1-flash-lite"; the API accepts
+            # the bare name, and "gemini/models/gemini-..." reads badly in a model menu.
+            ids = sorted({str(item.get("id")).removeprefix("models/") for item in data if item.get("id")})
             ids = [i for i in ids if provider.keep(i)]
         except Exception as exc:  # noqa: BLE001 - discovery is best effort
             log.info("Model discovery failed for %s: %s", provider.name, exc)

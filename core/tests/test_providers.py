@@ -69,3 +69,22 @@ async def test_default_model_follows_priority(tmp_path):
     reg.settings.agent_default_model = ""
     assert await reg.default_model_id() == "gemini/gemini-3.1-flash-lite"
     assert await registry(tmp_path).default_model_id() == "mock/hr-demo"
+
+
+@pytest.mark.asyncio
+async def test_fetched_ids_lose_the_models_prefix(tmp_path):
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"data": [{"id": "models/gemini-3.1-flash-lite"}, {"id": "models/text-embedding-004"}]},
+        )
+
+    def factory(provider):
+        return httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url=provider.base_url)
+
+    reg = ModelRegistry(make_settings(tmp_path), env={"GEMINI_API_KEY": "k"}, http_client_factory=factory)
+    ids = [m.id for m in await reg.available_models() if m.provider == "gemini"]
+    assert "gemini/gemini-3.1-flash-lite" in ids
+    assert not any("models/" in i for i in ids)  # and embeddings stay filtered out

@@ -80,7 +80,17 @@ login_code() {
     -d "{\"email\":\"$DEMO_EMAIL\",\"password\":\"$DEMO_PASS\"}" 2>/dev/null || echo 000
 }
 
-wait_for_stack() { for _ in $(seq 1 30); do [ "$(login_code)" != "000" ] && return 0; sleep 3; done; }
+# 000 = nothing listening, 502/503 = the gateway is up but LibreChat is still booting.
+# Treating those as "ready" is what made the account creation fire too early.
+wait_for_stack() {
+  for _ in $(seq 1 40); do
+    case "$(login_code)" in
+      000|502|503|504) sleep 3 ;;
+      *) return 0 ;;
+    esac
+  done
+  return 1
+}
 
 if [ -n "$DEMO_EMAIL" ] && [ -n "$DEMO_PASS" ]; then
   wait_for_stack
@@ -92,7 +102,7 @@ if [ -n "$DEMO_EMAIL" ] && [ -n "$DEMO_PASS" ]; then
     # with no terminal attached (exec -T) it waits for an answer forever.
     timeout 150 $DOCKER compose exec -T librechat npm run create-user -- \
       "$DEMO_EMAIL" "${DEMO_NAME:-Demo User}" "$DEMO_USERNAME" "$DEMO_PASS" \
-      --email-verified=true </dev/null >/dev/null 2>&1 || true
+      --email-verified=true </dev/null 2>&1 | tail -3 || true
 
     if [ "$(login_code)" != "200" ]; then
       echo "that did not take; using the registration endpoint instead"
@@ -110,7 +120,10 @@ if [ -n "$DEMO_EMAIL" ] && [ -n "$DEMO_PASS" ]; then
     if [ "$(login_code)" = "200" ]; then
       echo "demo account ready"
     else
-      echo "could not create the demo account; the UI will show the login page until it exists"
+      echo "could not create the demo account - leaving sign-up ON so you can register in the UI"
+      sed -i 's/^ALLOW_REGISTRATION=.*/ALLOW_REGISTRATION=true/' .env
+      sed -i 's/^GATEWAY_AUTO_LOGIN=.*/GATEWAY_AUTO_LOGIN=false/' .env
+      $DOCKER compose up -d librechat gateway >/dev/null 2>&1 || true
     fi
   fi
   $DOCKER compose restart gateway >/dev/null 2>&1 || true
@@ -126,7 +139,8 @@ Done.
   UI:       http://${IP:-<vm-ip>}:3080      (open tcp:3080 in the cloud firewall first)
   Console:  http://localhost:8088           (bound to localhost only - reach it over an SSH tunnel)
 
-Visitors land straight in a chat as the demo user - no login page.
+Open the UI and register an account (sign-up is on by default).
+Then close it:  sed -i 's/^ALLOW_REGISTRATION=.*/ALLOW_REGISTRATION=false/' .env && $DOCKER compose up -d
 
 Useful:
   Logs:     $DOCKER compose logs -f gateway   (or librechat, agent-core)
