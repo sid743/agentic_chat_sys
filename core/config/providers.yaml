@@ -105,6 +105,32 @@ providers:
     models: []
     tool_mode: native
 
+  cortexa:
+    label: Cortexa Core
+    type: cortexa
+    # Cortexa Enterprise SDK - install the wheel you were given (see README, "Cortexa Core").
+    # Cortexa takes one query and returns one answer: it has no tool-calling API. The
+    # tool_mode below supplies one (llm/tool_emulation.py):
+    #   emulated  Cortexa is told the tools and a reply format; its replies are parsed,
+    #             checked against the tool schemas, and sent back to be fixed if needed.
+    #   delegate  tool_planner (a model with native tool calling) picks the tools and
+    #             Cortexa writes the answers. For when Cortexa will not keep the format.
+    #   json      the older agent-level JSON protocol (one call per step, no checks).
+    # "event" is the standard path; "prism-event" also returns Cortexa's reasoning
+    # modules, which are recorded in the trace.
+    # The default URL is the dev environment the SDK's own tests use - confirm yours.
+    base_url: ${CORTEXA_CORE_BASE_URL:-https://dev.cortexaenterprise.ai}
+    app_id: ${CORTEXA_APP_ID:-}
+    api_key: ${CORTEXA_CLIENT_SECRET:-}
+    max_retries: 2
+    fetch_models: false
+    models:
+      - event
+      - prism-event
+    tool_mode: ${CORTEXA_TOOL_MODE:-emulated}
+    tool_planner: ${CORTEXA_TOOL_PLANNER:-}
+    tool_repairs: 2
+
   mock:
     label: Offline demo model
     type: mock
@@ -112,4 +138,4 @@ providers:
       - hr-demo
 
 # Order used when AGENT_DEFAULT_MODEL is empty ("auto").
-default_priority: [groq, gemini, openai, openrouter, ollama, lmstudio, vllm, mock]
+default_priority: [groq, gemini, openai, openrouter, ollama, lmstudio, vllm, cortexa, mock]

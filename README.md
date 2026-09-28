@@ -126,15 +126,108 @@ The agents use whatever you pick in LibreChat's model menu under **HR Multi-Agen
 | Ollama (local) | run Ollama; `ollama pull llama3.1:8b` | `ollama/llama3.1:8b`, `ollama/qwen2.5:7b` |
 | LM Studio (local) | start its server (port 1234) | `lmstudio/<loaded model>` |
 | vLLM (local) | `VLLM_BASE_URL` | `vllm/<served model>` |
+| Cortexa Core (SDK) | `CORTEXA_APP_ID`, `CORTEXA_CLIENT_SECRET`, `CORTEXA_CORE_BASE_URL`, plus the SDK wheel (see [Cortexa Core](#cortexa-core)) | `cortexa/event`, `cortexa/prism-event` |
 | Offline demo | nothing | `mock/hr-demo` |
 
-- `auto` uses `AGENT_DEFAULT_MODEL`. If that is empty, it uses the first available provider in this order: groq, gemini, openai, openrouter, ollama, lmstudio, vllm, mock.
+- `auto` uses `AGENT_DEFAULT_MODEL`. If that is empty, it uses the first available provider in this order: groq, gemini, openai, openrouter, ollama, lmstudio, vllm, cortexa, mock.
 - `AGENT_ROUTER_MODEL` can point routing at a small, fast model while the specialists use the selected one.
 - To pin a specialist to a specific model, set `model:` for that agent in `core/config/agents.yaml`.
 - Local servers are listed only while they are reachable. From Docker they are reached at `host.docker.internal`. If Ollama is not reachable, start it with `OLLAMA_HOST=0.0.0.0`.
 - Models without native tool calling are detected automatically and switched to a JSON tool protocol. Small models (7-8B) work for simple questions. Use a 70B-class or GPT-class model for reliable multi-step workflows.
 - Adding any other OpenAI-compatible provider takes one block in `core/config/providers.yaml`: `base_url`, `api_key`, `models`.
 - LibreChat also lists **Groq**, **Gemini**, **Ollama**, **LM Studio** and **OpenAI** for plain chat, without the agents. With `GROQ_API_KEY=user_provided` (the default), each user enters their own key in LibreChat. The agents can only use a key that is set in `.env`.
+
+### Cortexa Core
+
+Cortexa Core is reached through the Cortexa Enterprise SDK (a Python wheel, Python 3.12+), not an OpenAI-style API. The adapter is `core/agentic_core/llm/cortexa.py`.
+
+How a call works:
+
+- The chat (system prompt, earlier turns, tool results) is flattened into one `query` string and sent with `interactions.create(...)`. The model id picks the entrypoint: `cortexa/event` or `cortexa/prism-event`.
+- Cortexa has no tool-calling API. The emulation layer below gives it one, so the agents call tools on Cortexa exactly as they do on Gemini or Groq.
+- Every call carries `session_id` = conversation id, `user_id` = employee id, `trace_id` = run id, so a turn can be followed from `var/chatlogs` into Cortexa's own logs.
+- `prism-event` also returns Cortexa's module outputs (planner, collector, challenger, composer, ...). Their names are written to the agent trace.
+- The API reports no token counts, so usage is estimated. Replies are not streamed; the answer arrives whole.
+
+Set it up:
+
+1. Install the wheel. Laptop: `.venv\Scripts\python.exe -m pip install --ignore-requires-python C:\path\to\cortexa_enterprise_sdk-0.1.0-py3-none-any.whl` (the wheel asks for Python 3.12+ but runs on 3.11; the flag skips that check, and pip's warning about `langgraph-sdk` and `websockets` can be ignored). Docker: copy the wheel into `core/vendor/`; the image installs any wheel found there.
+2. Add to `.env` (or `python scripts/setup_env.py --cortexa-app-id ... --cortexa-client-secret ... --cortexa-url ...`):
+   ```
+   CORTEXA_APP_ID=...
+   CORTEXA_CLIENT_SECRET=...
+   CORTEXA_CORE_BASE_URL=https://...   # the Core URL you were given
+   ```
+3. Check it: `python -m agentic_core cortexa-check` (in Docker: `docker compose exec agent-core python -m agentic_core cortexa-check`). It tests the SDK, the settings, a real question, JSON replies (for routing) and a full tool-calling round trip, and ends with a recommended `CORTEXA_TOOL_MODE` if yours should change. It prints only masked credentials.
+4. Pick `cortexa/event` in the model menu, or set `AGENT_DEFAULT_MODEL=cortexa/event`.
+
+If `cortexa-check` warns that replies are not JSON, chats still work, but the router falls back to its built-in rules. For LLM routing keep a JSON-reliable router model, e.g. `AGENT_ROUTER_MODEL=gemini/gemini-3.1-flash-lite`.
+
+#### Tool calling without a tool-calling API
+
+`core/agentic_core/llm/tool_emulation.py` wraps any text-only model in `EmulatedToolsModel`, which has the same `complete(messages, tools) -> tool_calls` interface as a native model. The agents, the orchestrator and the tools are unchanged; only the model layer knows.
+
+On every agent step:
+
+```
+agent messages + tool schemas
+  -> text conversation: tool list and reply format added to the system prompt;
+     earlier tool calls written as JSON, tool results as a "Tool results:" message
+  -> Cortexa replies with text
+  -> parse:    {"tool_calls": [...]} / {"answer": ...}, plus what models write instead:
+               <tool_call> tags, ReAct "Action:" lines, name(arg=...) calls,
+               fenced or single-quoted JSON, OpenAI-shaped calls
+  -> validate: tool exists (close spellings accepted), required arguments present,
+               "5" -> 5, "yes" -> true, enum case fixed, camelCase args mapped,
+               unknown args dropped
+  -> unusable? send it back with the exact problem ("missing required argument
+               query"), up to tool_repairs times
+  -> tool_calls for the agent to run, or the answer
+```
+
+Two guards matter for enterprise data:
+
+- A prose answer given before any tool has run is sent back once: "if this needs company records, call a tool now". This stops an agent from answering policy questions from the model's memory. A prose answer after tools have run is accepted as the answer.
+- A reply that looks like a broken tool call is never shown to the user; it is sent back to be fixed. If nothing usable comes back after the repairs, the agent asks for a plain answer instead of failing the turn.
+
+`CORTEXA_TOOL_MODE` picks the strategy:
+
+| Mode | Who picks the tools | Who writes the answers | Use when |
+|---|---|---|---|
+| `emulated` (default) | Cortexa, in the text format above | Cortexa | `cortexa-check` shows Cortexa calling the sample tool |
+| `delegate` | `CORTEXA_TOOL_PLANNER`, a model with native tool calling (e.g. `gemini/gemini-3.1-flash-lite`) | Cortexa, from the tool results | Cortexa ignores the format and answers from memory |
+| `json` | Cortexa, older agent-level protocol (one call per step, no checks) | Cortexa | only for comparison |
+
+Every repair, fix and delegation appears in the Thoughts trace and the chat log, e.g. `cortexa/event: tool call fixed: get_leave_balance: read argument 'leaveType' as 'leave_type'`. Each repair is one more Cortexa call, so a turn with repairs is slower.
+
+The module needs only the standard library and `llm/base.py`, so it also works outside this platform, with the SDK called directly:
+
+```python
+import asyncio
+from cortexa_enterprise_sdk import AsyncCortexaEnterpriseClient
+from agentic_core.llm.cortexa import flatten
+from agentic_core.llm.tool_emulation import EmulatedToolsModel, TextFunctionModel, run_tools
+
+async def ask(messages):  # any "messages in, text out" function works here
+    # the SDK reads CORTEXA_APP_ID, CORTEXA_CLIENT_SECRET and CORTEXA_CORE_BASE_URL from the environment
+    async with AsyncCortexaEnterpriseClient() as client:
+        return (await client.interactions.create(query=flatten(messages))).response
+
+def get_weather(city: str) -> dict:
+    return {"city": city, "celsius": 31}
+
+tools = [{"name": "get_weather", "description": "Current weather for a city",
+          "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}]
+
+model = EmulatedToolsModel(TextFunctionModel(ask, "cortexa/event"))
+answer, transcript = asyncio.run(run_tools(
+    model, [{"role": "user", "content": "What is the weather in Mumbai?"}], tools, {"get_weather": get_weather}))
+print(answer)
+```
+
+Any provider in `providers.yaml` can use it: set `tool_mode: emulated` (or `delegate` with `tool_planner:`) on its block.
+
+Never commit the App ID or Client Secret. They belong in `.env`, which git ignores.
 
 ---
 
@@ -285,6 +378,8 @@ turns them off.
 | `AGENT_DEFAULT_MODEL` | empty (auto) | `<provider>/<model>` used for `auto` |
 | `AGENT_ROUTER_MODEL` | empty | Optional separate routing model |
 | `GROQ_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY` | `user_provided` / empty | Provider keys (`user_provided` = LibreChat-only) |
+| `CORTEXA_APP_ID`, `CORTEXA_CLIENT_SECRET`, `CORTEXA_CORE_BASE_URL` | empty, empty, `https://dev.cortexaenterprise.ai` | Cortexa Core credentials and URL (needs the SDK wheel) |
+| `CORTEXA_TOOL_MODE`, `CORTEXA_TOOL_PLANNER` | `emulated`, empty | How agents call tools through Cortexa (`emulated`, `delegate`, `json`); the planner model for `delegate` |
 | `OLLAMA_BASE_URL`, `LMSTUDIO_BASE_URL`, `VLLM_BASE_URL` | localhost URLs | Local servers (Docker rewrites them to `host.docker.internal`; override with `*_URL_IN_DOCKER`) |
 | `USER_EMPLOYEE_MAP`, `DEFAULT_EMPLOYEE_ID`, `ALLOW_ACT_AS` | empty, E1001, true | Identity mapping |
 | `DEMO_TODAY` | 2026-09-17 | Fixed date for the demo data; empty = real date |
@@ -310,7 +405,7 @@ turns them off.
 - **New tool.** Add a function with a pydantic argument model and the `@tool(...)` decorator in `core/agentic_core/tools/`, then list it in the agent's `tools`.
 - **New domain pack.** Add tables and seed data in `db/`, tools in `tools/`, documents in `data/policies/`, and agents in `agents.yaml`.
 - **Real systems.** Swap the SQLite tools for calls to an HRIS API, keeping the same tool names and return shapes.
-- **CORTEXA later.** The model layer is one class (`llm/openai_compat.py`) behind `ModelRegistry`. Adding a `cortexa` provider type there is enough to route all agent calls through the harness, without touching agents or tools.
+- **New provider type.** Model providers sit behind `ModelRegistry`: `llm/openai_compat.py` for OpenAI-style APIs, `llm/cortexa.py` for the Cortexa SDK. A new type is one `ChatModel` subclass plus a branch in `registry.resolve()`; agents and tools do not change.
 
 ---
 
@@ -330,11 +425,12 @@ agenticsys/
     ├── Dockerfile, requirements.txt, pyproject.toml
     ├── config/agents.yaml      orchestrator + 5 agents
     ├── config/providers.yaml   model providers
+    ├── vendor/                 private wheels installed into the image (e.g. the Cortexa SDK)
     ├── data/policies/          synthetic HR policy documents
     ├── agentic_core/
     │   ├── api/                OpenAI-compatible, documents and admin endpoints
     │   ├── agents/             orchestrator (LangGraph), router, agent runtime, text helpers
-    │   ├── llm/                OpenAI-compatible client, offline mock model, provider registry
+    │   ├── llm/                OpenAI-compatible client, Cortexa SDK adapter, tool-calling emulation, mock model, registry
     │   ├── tools/              HR and retrieval tools (access rules, audit)
     │   ├── domain/leave.py     leave rules
     │   ├── db/                 schema and seed data
@@ -358,6 +454,8 @@ agenticsys/
 - **The trace is not shown as Thoughts.** Keep `REASONING_FIELD=reasoning_content` and `customParams.reasoningKey: reasoning_content` in `librechat.yaml`.
 - **Uploaded file ignored.** On older LibreChat versions choose "Upload as Text" in the attach menu. Scanned PDFs without a text layer have no text to index. Image files are ignored by the HR agents.
 - **LibreChat logs "Outdated Config version".** This is informational. The config also validates against older LibreChat releases.
+- **Cortexa answers without using tools.** Run `cortexa-check`. If it recommends `CORTEXA_TOOL_MODE=delegate`, set that and `CORTEXA_TOOL_PLANNER`, then `docker compose up -d`.
+- **Cortexa errors.** Run `python -m agentic_core cortexa-check` first; it names the failing piece. "Authentication failed" = App ID or secret; "Could not connect" = wrong `CORTEXA_CORE_BASE_URL` or the VM cannot reach it; "SDK is not installed" = the wheel is missing from the venv or from `core/vendor/` before the image was built.
 - **Start over.** Use `/reset-demo` (as E1010), `POST /api/reset`, or `docker compose down -v` (this also deletes LibreChat users).
 
 ---

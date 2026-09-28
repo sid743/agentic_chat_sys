@@ -58,6 +58,9 @@ def main() -> int:
     parser.add_argument("--openai-key")
     parser.add_argument("--openrouter-key")
     parser.add_argument("--gemini-key")
+    parser.add_argument("--cortexa-app-id")
+    parser.add_argument("--cortexa-client-secret")
+    parser.add_argument("--cortexa-url", help="Cortexa Core base URL, e.g. https://dev.cortexaenterprise.ai")
     parser.add_argument("--default-model", help="e.g. groq/qwen/qwen3.8-27b or ollama/llama3.1:8b")
     parser.add_argument("--router-model", help="optional fast routing model, e.g. groq/openai/gpt-oss-20b")
     parser.add_argument("--map", action="append", default=[], help="email=E1001 (repeatable)")
@@ -92,6 +95,9 @@ def main() -> int:
         "OPENAI_API_KEY": args.openai_key,
         "OPENROUTER_API_KEY": args.openrouter_key,
         "GEMINI_API_KEY": args.gemini_key,
+        "CORTEXA_APP_ID": args.cortexa_app_id,
+        "CORTEXA_CLIENT_SECRET": args.cortexa_client_secret,
+        "CORTEXA_CORE_BASE_URL": args.cortexa_url,
         "AGENT_DEFAULT_MODEL": args.default_model,
         "AGENT_ROUTER_MODEL": args.router_model,
     }

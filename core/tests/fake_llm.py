@@ -65,6 +65,9 @@ class FakeLLM:
             return httpx.Response(200, json=_completion({"content": "```json\n" + json.dumps(plan) + "\n```"}))
 
         if "tools" in body:
+            if self.mode == "no_tool_choice" and "tool_choice" in body:
+                # Ollama-style: happy with `tools`, rejects `tool_choice`
+                return httpx.Response(400, json={"error": {"message": "tool_choice is not supported", "type": "invalid_request_error"}})
             if self.mode == "no_tools":
                 return httpx.Response(400, json={"error": {"message": "registry/fake-model does not support tools", "type": "invalid_request_error"}})
             if last["role"] == "tool":
@@ -113,6 +116,11 @@ providers:
     api_key: none
     fetch_models: true
     models: []
+  nochoice:
+    type: openai
+    base_url: http://nochoice.local/v1
+    api_key: test
+    models: [fake-model]
   limited:
     type: openai
     base_url: http://limited.local/v1

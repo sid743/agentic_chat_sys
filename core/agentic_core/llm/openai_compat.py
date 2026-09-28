@@ -63,6 +63,7 @@ class OpenAICompatModel(ChatModel):
         self.base_url = base_url
         self.native_tools = native_tools
         self.json_mode = json_mode
+        self.send_tool_choice = True
         self.accepts_temperature = not _NO_TEMPERATURE.match(model.split("/")[-1])
         self.default_temperature = default_temperature
         self.extra_body = extra_body or {}
@@ -127,6 +128,12 @@ class OpenAICompatModel(ChatModel):
                 return await self.client.chat.completions.create(**kwargs)
             except openai.BadRequestError as exc:
                 msg = str(exc).lower()
+                # Some servers (Ollama among them) take `tools` but not `tool_choice`.
+                # Drop the hint and retry before concluding the model cannot call tools.
+                if "tool_choice" in kwargs and "tool_choice" in msg:
+                    kwargs.pop("tool_choice", None)
+                    self.send_tool_choice = False
+                    continue
                 if has_tools and ("tool" in msg or "function" in msg):
                     if "tool_use_failed" in msg or "failed to call a function" in msg:
                         raise ToolsNotSupported(f"{self.id} produced an invalid tool call") from exc
@@ -154,7 +161,8 @@ class OpenAICompatModel(ChatModel):
         kwargs = self._kwargs(messages, options)
         if tools:
             kwargs["tools"] = tools
-            kwargs["tool_choice"] = "auto"
+            if self.send_tool_choice:
+                kwargs["tool_choice"] = "auto"
         if options.json_mode and self.json_mode and not tools:
             kwargs["response_format"] = {"type": "json_object"}
         resp = await self._create(kwargs, has_tools=bool(tools))

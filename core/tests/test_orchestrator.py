@@ -111,7 +111,13 @@ def fake_service(service, tmp_path):
     def rate_limited(request):
         return httpx.Response(429, json={"error": {"message": "rate limit reached", "type": "rate_limit_exceeded"}})
 
-    fakes = {"fake": fake, "fakejson": FakeLLM("json"), "notools": FakeLLM("no_tools"), "limited": rate_limited}
+    fakes = {
+        "fake": fake,
+        "fakejson": FakeLLM("json"),
+        "notools": FakeLLM("no_tools"),
+        "nochoice": FakeLLM("no_tool_choice"),
+        "limited": rate_limited,
+    }
 
     def offline(request):
         raise httpx.ConnectError("offline")
@@ -185,3 +191,13 @@ def test_answer_carries_the_flow_diagram(fake_service):
     assert "  agents   " in out["content"]
     # and it is recorded for the console without breaking the reasoning-then-content order
     assert "START -> route(llm)" not in out["reasoning"]
+
+
+def test_server_that_rejects_tool_choice_still_gets_native_tools(fake_service):
+    # Ollama accepts `tools` but not `tool_choice`; that must not look like "no tool support".
+    out = ask(fake_service, "How much annual leave do I have?", model="nochoice/fake-model")
+    assert out["status"] == "ok"
+    requests = fake_service.fakes["nochoice"].requests
+    assert any("tools" in r for r in requests), "native tool calling was kept"
+    assert any(m.get("role") == "tool" for r in requests for m in r["messages"])
+    assert "JSON tool protocol" not in out["reasoning"]

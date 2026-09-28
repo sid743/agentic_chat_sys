@@ -13,7 +13,14 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from ..llm.base import CallOptions, ChatModel, LLMError, ToolsNotSupported, Usage, parse_json_object
+from ..llm.base import (
+    CallOptions,
+    ChatModel,
+    LLMError,
+    ToolsNotSupported,
+    Usage,
+    parse_json_object,
+)
 from ..tools import REGISTRY, execute_tool, schemas_for
 from .config import AgentSpec
 from .context import RequestContext, ToolContext
@@ -216,6 +223,24 @@ class AgentRunner:
         seen[key] = output
         return output
 
+    def _note_reply(self, reply: Any) -> None:
+        """Put what the model layer reported about a reply into the agent trace."""
+        meta = reply.meta or {}
+        note = lambda text: self.request.trace.note(f"{self.model.id}: {text}", agent=self.spec.id)
+        if meta.get("prism_modules"):
+            note(f"Cortexa modules {', '.join(meta['prism_modules'])}")
+        if meta.get("tool_strategy") == "delegate" and reply.tool_calls:
+            note(f"tools chosen by {meta.get('planner')} (delegate mode)")
+        if meta.get("planner_error"):
+            note(f"planner unavailable ({meta['planner_error']}); Cortexa chose the tools itself")
+        if meta.get("repairs"):
+            forms = " -> ".join(meta.get("reply_forms") or [])
+            note(f"reply sent back to be fixed {meta['repairs']}x ({forms})")
+        for fix in meta.get("tool_notes") or []:
+            note(f"tool call fixed: {fix}")
+        if meta.get("gave_up"):
+            note("no usable tool call after repairs")
+
     async def _run_native(self, user_prompt: str, options: CallOptions, result: AgentResult) -> str:
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": self._system_prompt(json_mode=False)},
@@ -226,6 +251,7 @@ class AgentRunner:
         duplicates = 0
         for _ in range(self.max_steps):
             reply = await self.model.complete(messages, tools, options)
+            self._note_reply(reply)
             if not reply.tool_calls:
                 if reply.content.strip():
                     return reply.content.strip()
@@ -235,7 +261,7 @@ class AgentRunner:
                     "role": "assistant",
                     "content": reply.content or "",
                     "tool_calls": [
-                        {"id": c.id, "type": "function", "function": {"name": c.name, "arguments": json.dumps(c.arguments)}}
+                        {"id": c.id, "type": "function", "function": {"name": c.name, "arguments": json.dumps(c.arguments, default=str)}}
                         for c in reply.tool_calls
                     ],
                 }
@@ -261,6 +287,7 @@ class AgentRunner:
         options = replace(options, json_mode=True)  # ask the provider for a JSON object when it can
         for _ in range(self.max_steps):
             reply = await self.model.complete(messages, None, options)
+            self._note_reply(reply)
             data = parse_json_object(reply.content)
             if not data:
                 return reply.content.strip() or "I couldn't finish this task."

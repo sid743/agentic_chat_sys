@@ -16,8 +16,10 @@ import yaml
 
 from ..settings import Settings
 from .base import ChatModel, LLMError
+from .cortexa import CortexaChatModel
 from .mock import MockChatModel
 from .openai_compat import OpenAICompatModel
+from .tool_emulation import EmulatedToolsModel
 
 log = logging.getLogger(__name__)
 
@@ -42,13 +44,17 @@ class ProviderConfig:
     type: str = "openai"
     base_url: str = ""
     api_key: str = ""
+    app_id: str = ""  # Cortexa: App ID (api_key holds the client secret)
+    max_retries: int = 2
     local: bool = False
     fetch_models: bool = False
     models: list[str] = field(default_factory=list)
     model_include: str | None = None
     model_exclude: str | None = None
     headers: dict[str, str] = field(default_factory=dict)
-    tool_mode: str = "native"  # native | json
+    tool_mode: str = "native"  # native | json | emulated | delegate (see llm/tool_emulation.py)
+    tool_planner: str = ""  # delegate: the model with native tool calling that picks the tools
+    tool_repairs: int = 2  # emulated: how often a malformed tool call is sent back to be fixed
     json_mode: bool = True
     extra_body: dict[str, Any] = field(default_factory=dict)
 
@@ -64,6 +70,8 @@ class ProviderConfig:
             return True
         if not self.base_url:
             return False
+        if self.type == "cortexa":
+            return self.has_key and bool(self.app_id)
         return self.local or self.has_key
 
     def keep(self, model_id: str) -> bool:
@@ -93,6 +101,7 @@ class ModelRegistry:
     ):
         self.settings = settings
         self.http_client_factory = http_client_factory  # tests inject a fake transport here
+        self.cortexa_client_factory: Any = None  # tests inject a fake Cortexa client here
         env_map = dict(os.environ)
         env_map.update(_dotenv_values(settings))
         if env:
@@ -194,18 +203,58 @@ class ModelRegistry:
             f"Unknown model '{model_id}'. Use '<provider>/<model>' with one of: {', '.join(self.providers)}."
         )
 
+    async def _planner_for(self, provider: ProviderConfig) -> ChatModel:
+        planner_id = (provider.tool_planner or "").strip()
+        if not planner_id:
+            raise LLMError(
+                f"Provider '{provider.name}' uses tool_mode 'delegate' but has no tool_planner "
+                "(e.g. CORTEXA_TOOL_PLANNER=gemini/gemini-3.1-flash-lite)."
+            )
+        planner_provider = self.split(planner_id)[0]
+        if planner_provider.name == provider.name:
+            raise LLMError(f"The tool_planner for '{provider.name}' must be a model from another provider.")
+        # Only a provider with native tool calling can plan. This also rules out chains
+        # and loops (a -> b -> a), since a native provider never delegates.
+        if planner_provider.tool_mode != "native" or planner_provider.type in ("cortexa", "mock"):
+            raise LLMError(
+                f"The tool_planner '{planner_id}' needs native tool calling "
+                f"(its provider uses tool_mode '{planner_provider.tool_mode}')."
+            )
+        planner = await self.resolve(planner_id)
+        if not planner.native_tools:
+            raise LLMError(f"The tool_planner '{planner_id}' has no native tool calling.")
+        return planner
+
     async def resolve(self, model_id: str | None) -> ChatModel:
         if not model_id or model_id in ("auto", "default"):
             model_id = await self.default_model_id()
+        if model_id in self._instances:
+            return self._instances[model_id]
+        provider, name = self.split(model_id)
+        # Resolved before taking the lock: resolving the planner takes it too.
+        planner = await self._planner_for(provider) if provider.enabled and provider.tool_mode == "delegate" else None
         async with self._lock:
             if model_id in self._instances:
                 return self._instances[model_id]
-            provider, name = self.split(model_id)
             if not provider.enabled:
-                missing = "API key" if not provider.local else "base URL"
+                if provider.type == "cortexa":
+                    missing = "CORTEXA_APP_ID, CORTEXA_CLIENT_SECRET or CORTEXA_CORE_BASE_URL"
+                else:
+                    missing = "API key" if not provider.local else "base URL"
                 raise LLMError(f"Provider '{provider.name}' is not configured (missing {missing} in .env).")
             if provider.type == "mock":
                 instance: ChatModel = MockChatModel(model=name)
+            elif provider.type == "cortexa":
+                instance = CortexaChatModel(
+                    provider=provider.name,
+                    model=name,
+                    app_id=provider.app_id,
+                    client_secret=provider.api_key,
+                    base_url=provider.base_url,
+                    timeout=self.settings.llm_timeout_seconds,
+                    max_retries=provider.max_retries,
+                    client_factory=self.cortexa_client_factory,
+                )
             else:
                 instance = OpenAICompatModel(
                     provider=provider.name,
@@ -214,12 +263,15 @@ class ModelRegistry:
                     api_key=provider.api_key,
                     timeout=self.settings.llm_timeout_seconds,
                     headers=provider.headers,
-                    native_tools=provider.tool_mode != "json",
+                    native_tools=provider.tool_mode == "native",
                     json_mode=provider.json_mode,
                     default_temperature=self.settings.llm_temperature,
                     extra_body=provider.extra_body,
                     http_client=self.http_client_factory(provider) if self.http_client_factory else None,
                 )
+            if provider.tool_mode in ("emulated", "delegate"):
+                # Text-only model: give it the native tool-calling interface.
+                instance = EmulatedToolsModel(instance, max_repairs=provider.tool_repairs, planner=planner)
             self._instances[model_id] = instance
             return instance
 
@@ -234,6 +286,7 @@ class ModelRegistry:
                 "base_url": p.base_url,
                 "has_api_key": p.has_key and not p.local,
                 "tool_mode": p.tool_mode,
+                **({"tool_planner": p.tool_planner} if p.tool_mode == "delegate" else {}),
             }
             for p in self.providers.values()
         ]

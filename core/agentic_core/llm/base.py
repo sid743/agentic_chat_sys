@@ -6,8 +6,13 @@ import json
 import re
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
+
+# Who and what the current turn is about, for providers that can tag their calls with it
+# (Cortexa takes session_id / user_id / trace_id). Set once per turn by the orchestrator.
+CALL_SCOPE: ContextVar[dict[str, str] | None] = ContextVar("call_scope", default=None)
 
 
 class LLMError(RuntimeError):
@@ -44,6 +49,8 @@ class ChatResult:
     usage: Usage = field(default_factory=Usage)
     model: str = ""
     finish_reason: str | None = None
+    # Provider-specific extras worth recording (e.g. Cortexa prism modules).
+    meta: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -134,6 +141,73 @@ class ThinkFilter:
         return rest
 
 
+_TRAILING_COMMA = re.compile(r",\s*([}\]])")
+_PY_LITERAL = re.compile(r"\b(True|False|None)\b")
+_SMART_QUOTES = str.maketrans({"“": '"', "”": '"', "‘": "'", "’": "'"})
+
+
+def _fix_bare_json(segment: str) -> str:
+    segment = _TRAILING_COMMA.sub(r"\1", segment)
+    return _PY_LITERAL.sub(lambda m: {"True": "true", "False": "false", "None": "null"}[m.group(1)], segment)
+
+
+def _outside_strings(text: str, fix: Any) -> str:
+    """Apply `fix` to the parts of `text` that are not inside double-quoted strings."""
+    out, buf, i, n = [], [], 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch == '"':
+            out.append(fix("".join(buf)))
+            buf = []
+            j = i + 1
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            out.append(text[i : j + 1])
+            i = j + 1
+            continue
+        buf.append(ch)
+        i += 1
+    out.append(fix("".join(buf)))
+    return "".join(out)
+
+
+def _json_compatible(value: Any, depth: int = 0) -> bool:
+    if depth > 100:
+        return False
+    if isinstance(value, dict):
+        return all(isinstance(k, str) and _json_compatible(v, depth + 1) for k, v in value.items())
+    if isinstance(value, list):
+        return all(_json_compatible(v, depth + 1) for v in value)
+    return value is None or isinstance(value, (str, int, float, bool))
+
+
+def loads_lenient(text: str) -> Any:
+    """json.loads that also takes what models commonly get wrong: raw newlines inside
+    strings, trailing commas, Python literals (True/None, single-quoted dicts) and smart
+    quotes used as delimiters. Repairs are tried from least to most invasive, and
+    only outside string values, so a string's content is never changed when the text
+    parses without that repair. Raises ValueError when nothing works."""
+    if not isinstance(text, str):
+        raise ValueError("not a string")  # noqa: TRY004 - callers handle ValueError only
+    text = text.strip()
+    smart = text.translate(_SMART_QUOTES)
+    for candidate in dict.fromkeys((text, _outside_strings(text, _fix_bare_json), _outside_strings(smart, _fix_bare_json))):
+        try:
+            return json.loads(candidate, strict=False)
+        except (json.JSONDecodeError, RecursionError):
+            pass
+    import ast
+
+    for candidate in dict.fromkeys((text, smart)):  # a Python literal: {'a': 'b', 'c': None,}
+        try:
+            value = ast.literal_eval(candidate)
+        except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+            continue
+        if _json_compatible(value):  # not Ellipsis, sets, bytes, tuples
+            return value
+    raise ValueError("not valid JSON")
+
+
 def parse_json_object(text: str) -> dict[str, Any] | None:
     """Best-effort extraction of the first JSON object in a model reply."""
     if not text:
@@ -144,10 +218,10 @@ def parse_json_object(text: str) -> dict[str, Any] | None:
     candidates.append(text)
     for candidate in candidates:
         try:
-            value = json.loads(candidate)
+            value = loads_lenient(candidate)
             if isinstance(value, dict):
                 return value
-        except (json.JSONDecodeError, TypeError):
+        except ValueError:
             pass
         start = candidate.find("{")
         while start != -1:
@@ -172,10 +246,10 @@ def parse_json_object(text: str) -> dict[str, Any] | None:
                     depth -= 1
                     if depth == 0:
                         try:
-                            value = json.loads(candidate[start : i + 1])
+                            value = loads_lenient(candidate[start : i + 1])
                             if isinstance(value, dict):
                                 return value
-                        except json.JSONDecodeError:
+                        except ValueError:
                             pass
                         break
             start = candidate.find("{", start + 1)

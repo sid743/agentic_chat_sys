@@ -13,7 +13,11 @@ sys.path.insert(0, str(CORE))
 # Deterministic environment for every test (set before the package is imported).
 os.environ["DEMO_TODAY"] = "2026-09-17"
 os.environ["AGENT_DEFAULT_MODEL"] = "mock/hr-demo"
-for key in ("GROQ_API_KEY", "GEMINI_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "AGENT_CORE_API_KEY", "AGENT_ROUTER_MODEL"):
+for key in (
+    "GROQ_API_KEY", "GEMINI_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "AGENT_CORE_API_KEY",
+    "AGENT_ROUTER_MODEL", "CORTEXA_APP_ID", "CORTEXA_CLIENT_SECRET", "CORTEXA_CORE_BASE_URL",
+    "CORTEXA_TOOL_MODE", "CORTEXA_TOOL_PLANNER",
+):
     os.environ.pop(key, None)
 
 from agentic_core.agents.context import Actor, RequestContext, ToolContext  # noqa: E402

@@ -6,6 +6,7 @@
     python -m agentic_core chat "question" [--as E1002] [--model groq/qwen/qwen3.8-27b]
     python -m agentic_core models             # list models the agents can use
     python -m agentic_core graph              # print the orchestration graph (Mermaid)
+    python -m agentic_core cortexa-check      # test the Cortexa Core credentials and connection
 """
 
 from __future__ import annotations
@@ -48,7 +49,23 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("models", help="list available models")
     sub.add_parser("graph", help="print the LangGraph orchestration graph as Mermaid")
 
+    check = sub.add_parser("cortexa-check", help="test the Cortexa Core credentials and connection")
+    check.add_argument("--entrypoint", default="event", choices=["event", "prism-event"])
+
     args = parser.parse_args(argv)
+
+    if args.command == "cortexa-check":
+        # Needs only the settings and providers.yaml, not the database or the index.
+        from .llm.cortexa_check import run_check
+        from .llm.registry import ModelRegistry
+        from .settings import get_settings
+
+        settings = get_settings()
+        provider = ModelRegistry(settings).providers.get("cortexa")
+        if provider is None:
+            print("There is no 'cortexa' provider in config/providers.yaml.")
+            return 1
+        return asyncio.run(run_check(provider, entrypoint=args.entrypoint, timeout=settings.llm_timeout_seconds))
 
     if args.command == "serve":
         import uvicorn

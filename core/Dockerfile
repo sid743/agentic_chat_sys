@@ -10,6 +10,11 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
+# Private wheels (e.g. the Cortexa Enterprise SDK) dropped into core/vendor/ are installed
+# if present; the image builds fine without them.
+COPY vendor/ ./vendor/
+RUN if ls vendor/*.whl >/dev/null 2>&1; then pip install vendor/*.whl; fi
+
 COPY agentic_core ./agentic_core
 COPY config ./config
 COPY data ./data

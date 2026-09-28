@@ -12,7 +12,7 @@ from typing import Annotated, Any, TypedDict
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 
-from ..llm.base import CallOptions, ChatModel, LLMError, Usage
+from ..llm.base import CALL_SCOPE, CallOptions, ChatModel, LLMError, Usage
 from ..llm.registry import ModelRegistry
 from ..settings import Settings
 from .config import AgentsConfig
@@ -268,7 +268,17 @@ class Orchestrator:
         if request.new_uploads:
             request.trace.uploads(request.new_uploads)
         state: TurnState = {"user_message": user_message, "history": history, "results": [], "step": 0}
-        final = await self.graph.ainvoke(state, config={"configurable": {"rt": rt}, "recursion_limit": 40})
+        scope = CALL_SCOPE.set(
+            {
+                "session_id": request.conversation_id,
+                "user_id": request.actor.id or request.user_email,
+                "trace_id": request.run_id,
+            }
+        )
+        try:
+            final = await self.graph.ainvoke(state, config={"configurable": {"rt": rt}, "recursion_limit": 40})
+        finally:
+            CALL_SCOPE.reset(scope)
         results = final.get("results", [])
         answer = final.get("answer", "")
         error = final.get("error")
